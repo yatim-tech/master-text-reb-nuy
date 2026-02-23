@@ -11,6 +11,7 @@ from transformers.trainer_utils import is_main_process
 from dataclasses import dataclass, field
 from transformers import Trainer
 from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
+from lr_finder_les import find_lr_and_continue
 
 # from packing.packed_dataset import PackedDataset
 from transformers import (
@@ -375,7 +376,7 @@ def main():
                 train_request["submission_dir"],
                 training_args.output_dir,
                 train_request["model_name"],
-                max_steps, 
+                max_steps,
                 checking_step=checking_step,
                 total_steps_all_epochs=total_steps_all_epochs,
                 end_time=train_request["end_time"],
@@ -384,9 +385,76 @@ def main():
         ],
     )
 
+    # ------------------------------------------------------------------ #
+    # LR Finder (Leslie Smith Range Test)                                  #
+    # Strategy: all GPU ranks run finder in parallel on their data shard,  #
+    # then all-reduce the result — no idle ranks, no broadcast overhead.   #
+    # Skip only when using DeepSpeed (incompatible with param manipulation).#
+    # ------------------------------------------------------------------ #
+    run_lr_finder = train_request.get("run_lr_finder", True)
+    distributed_type = train_request.get("distributed", "ddp")
+    use_deepspeed = (distributed_type == "ds")
+
+    if run_lr_finder and not use_deepspeed:
+        log_info(
+            f"[LR Finder] Running on {training_args.world_size} GPU(s) in parallel. "
+            f"Current LR from config: {training_args.learning_rate:.2e}"
+        )
+        # Use a wider sweep range: 10× below to 10× above the config LR.
+        # The finder will stop early if loss diverges before reaching end_lr.
+        min_lr = training_args.learning_rate * 0.1
+        max_lr = training_args.learning_rate * 10.0
+
+        try:
+            effective_lr, best_state_dict, _, num_evals = find_lr_and_continue(
+                trainer=trainer,
+                start_lr=min_lr,
+                end_lr=max_lr,
+                time_budget_minutes=5.0,
+                preserve_state=True,
+                lora=training_args.use_lora,
+            )
+            log_info(f"[LR Finder] Selected LR: {effective_lr:.2e} (after {num_evals} evals)")
+        except torch.cuda.OutOfMemoryError:
+            # OOM during finder — retry with batch_size=1
+            log_info("[LR Finder] OOM — retrying with per_device_train_batch_size=1")
+            from copy import deepcopy
+            lr_finder_args = deepcopy(training_args)
+            lr_finder_args.per_device_train_batch_size = 1
+            lr_finder_trainer = Trainer(
+                model=model,
+                tokenizer=tokenizer,
+                args=lr_finder_args,
+                train_dataset=train_ds,
+                eval_dataset=dev_ds,
+            )
+            try:
+                effective_lr, best_state_dict, _, num_evals = find_lr_and_continue(
+                    trainer=lr_finder_trainer,
+                    start_lr=min_lr,
+                    end_lr=max_lr,
+                    time_budget_minutes=5.0,
+                    preserve_state=True,
+                    lora=training_args.use_lora,
+                )
+                log_info(f"[LR Finder] (retry) Selected LR: {effective_lr:.2e}")
+            except Exception as e2:
+                log_info(f"[LR Finder] Retry also failed: {e2} — using config LR")
+                effective_lr = training_args.learning_rate
+            del lr_finder_trainer, lr_finder_args
+        except Exception as e:
+            log_info(f"[LR Finder] Failed: {e} — using config LR")
+            effective_lr = training_args.learning_rate
+
+        training_args.learning_rate = effective_lr
+        log_info(f"[LR Finder] Final LR set for training: {effective_lr:.2e}")
+    else:
+        if use_deepspeed:
+            log_info("[LR Finder] Skipped — DeepSpeed mode (ZeRO incompatible with param manipulation)")
+        else:
+            log_info("[LR Finder] Skipped — disabled via run_lr_finder=False")
+
     trainer.tokenizer = tokenizer
-    # last_checkpoint = get_last_checkpoint(training_args.output_dir)
-    # log_info(f"last_checkpoint: {last_checkpoint}")
     trainer.train()
     
     if is_main_process(LOCAL_RANK):

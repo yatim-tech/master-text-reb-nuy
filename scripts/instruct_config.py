@@ -7,7 +7,6 @@ from model_utility import (
     get_gpu_count,
 )
 from copy import deepcopy
-from lrs_lookup import get_instruct_lr
 
 
 FIXED_BS_CONFIG = {
@@ -264,15 +263,8 @@ def get_training_json(train_info: dict) -> dict:
     if model_architecture.strip().lower() in ["gptossforcausallm"]:
         run_config["use_lora"] = False  # currently, gptoss does not support lora
 
-    if train_info["find_lk_lr"]:
-        # get lr from lrs_lookup.py
-        lr = get_instruct_lr(model_name)
-        if lr is not None:
-            print(f"Using lr from lk: {lr}", flush=True)
-            run_config["learning_rate"] = lr
-        else:
-            print(f"Using lr from config: {run_config['learning_rate']}", flush=True)
-
+    # lr_finder_les.py (Leslie Smith) will find the optimal LR at runtime,
+    # so we only apply reg_ratio to the base config LR here.
     run_config["learning_rate"] *= train_info["reg_ratio"]
     run_cmd = get_run_cmd(run_config, run_config["gpu_nums"])
     train_request = deepcopy(train_info)
@@ -290,5 +282,11 @@ def get_training_json(train_info: dict) -> dict:
         train_request["min_steps"] = max(
             int(train_info["hours_to_complete"] * 70), train_request["min_steps"]
         )
+
+    # Pass distributed type and LR finder flag to train_request so
+    # train_instruct.py can decide whether to run the finder.
+    train_request["distributed"] = run_config.get("distributed", "ddp")
+    # Disable LR finder for DeepSpeed (ZeRO incompatible with manual param ops)
+    train_request["run_lr_finder"] = run_config.get("distributed", "ddp") != "ds"
 
     return {"train_request": train_request, "run_cmd": run_cmd}
