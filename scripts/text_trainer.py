@@ -239,13 +239,6 @@ def delete_poor_checkpoints(train_runs: list[dict]):
                 shutil.rmtree(run["output_dir"])
 
 
-def get_log_scale(task_type: str):
-    log_scale_map = {
-        TaskType.DPOTASK.value: 0.18,
-        TaskType.GRPOTASK.value: 0.2,
-        TaskType.CHATTASK.value: 0.18,
-    }
-    return log_scale_map.get(task_type, 0.18)
 
 
 def main():
@@ -447,96 +440,40 @@ def main():
         )
     else:
         # -------------------------------------------------------------- #
-        # DPO / GRPO / other: keep original state-machine multi-run loop  #
-        # with lr_utils for DPO/GRPO LR search.                          #
+        # DPO / GRPO: single training run each.                           #
+        # - DPO: LR finder (SFT-proxy) runs inside train_dpo.py          #
+        # - GRPO: uses config LR, LR finder not compatible with rollouts  #
         # -------------------------------------------------------------- #
-        while True:
-            state = get_state()
-            train_cmd = original_train_cmd
-            c_train_info = copy.deepcopy(train_info)
-            final_output_dir = None
+        run_output_dir = output_dir + f"_{count}"
+        train_cmd = replace_args_in_cmd(original_train_cmd, "output_dir", run_output_dir)
+        c_train_info = copy.deepcopy(train_info)
+        c_train_info["train_request"]["checking_mode"] = "none"
 
-            if args.task_type == TaskType.GRPOTASK.value:
-                state["mode"] = "finish"  # single run for GRPO
-                c_train_info["train_request"]["checking_mode"] = "none"
-            else:
-                if state["mode"] == "initial":
-                    c_train_info["train_request"]["checking_mode"] = "first_time"
+        current_request_path = os.path.join(
+            ds_folder, f"training_request_{args.task_id}_{count}.json"
+        )
+        with open(current_request_path, "w") as f:
+            json.dump(c_train_info, f, indent=4, ensure_ascii=False)
+        train_cmd = replace_args_in_cmd(train_cmd, "request_path", current_request_path)
 
-                elif state["mode"] == "continue":
-                    import lr_utils
-                    c_train_info["train_request"]["checking_mode"] = "second_time"
-                    n_runs = state["next_runs"]
-                    if "lrs" not in state:
-                        current_lr = float(state["train"]["lr"])
-                        state["lrs"] = lr_utils.extend_learning_rates(
-                            current_lr, n_runs, log_range=get_log_scale(args.task_type)
-                        )
-                        assert len(state["lrs"]) == n_runs
-                        state["runs"] = []
+        log_path = os.path.join(ds_folder, f"train_{args.task_id}.log")
+        state["train"] = {
+            "train_cmd": train_cmd,
+            "log_path": log_path,
+            "lr": extract_value_from_cmd(train_cmd, "learning_rate"),
+            "output_dir": run_output_dir,
+        }
+        state["train"]["start_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        set_state(state)
 
-                    set_state(state)
-                    state["runs"].append(state["train"].copy())
-                    delete_poor_checkpoints(state["runs"])
-                    if len(state["runs"]) < n_runs:
-                        index = len(state["runs"])
-                        current_lr = state["lrs"][index]
-                        train_cmd = replace_args_in_cmd(
-                            train_cmd, "learning_rate", str(state["lrs"][index])
-                        )
-                    else:
-                        c_train_info["train_request"]["checking_mode"] = "none"
-                        index = np.argmin([run["current_loss"] for run in state["runs"]])
-                        print(f"BL;{index};{state['runs'][index]['current_loss']}; {state['lrs'][index]}", flush=True)
-                        train_cmd = state["runs"][index]["train_cmd"]
-                        final_output_dir = state["runs"][index]["output_dir"]
-                        state["mode"] = "finish"
-                else:
-                    assert state["mode"] == "finish"
-                    break
-
-            set_state(state)
-            if train_cmd:
-                run_output_dir = output_dir + f"_{count}" if not final_output_dir else final_output_dir
-                train_cmd = replace_args_in_cmd(train_cmd, "output_dir", run_output_dir)
-
-                current_request_path = os.path.join(
-                    ds_folder, f"training_request_{args.task_id}_{count}.json"
-                )
-                with open(current_request_path, "w") as f:
-                    json.dump(c_train_info, f, indent=4, ensure_ascii=False)
-
-                train_cmd = replace_args_in_cmd(train_cmd, "request_path", current_request_path)
-
-                state["train"] = {
-                    "train_cmd": train_cmd,
-                    "log_path": os.path.join(ds_folder, f"train_{args.task_id}.log"),
-                    "lr": extract_value_from_cmd(train_cmd, "learning_rate"),
-                    "output_dir": run_output_dir,
-                }
-                state["train"]["start_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                set_state(state)
-
-                log_path = state["train"]["log_path"]
-                success = run_training(
-                    train_cmd,
-                    log_path,
-                    args.task_id,
-                    args.retries,
-                    args.task_type,
-                    args.expected_repo_name,
-                )
-                time.sleep(5)
-                if not success:
-                    print(f"Training failed for task {args.task_id} at count={count}", flush=True)
-                    break
-
-            count += 1
-
-        if not os.path.exists(submission_dir) or len(os.listdir(submission_dir)) < 2:
-            pass  # fall through to train_success check below
-        else:
-            train_success = True
+        train_success = run_training(
+            train_cmd,
+            log_path,
+            args.task_id,
+            args.retries,
+            args.task_type,
+            args.expected_repo_name,
+        )
 
     if not os.path.exists(submission_dir) or len(os.listdir(submission_dir)) < 2:
         print(f"Training failed for task {args.task_id}", flush=True)
