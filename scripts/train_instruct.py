@@ -462,7 +462,6 @@ def main():
         # Persist the found LR into shared state so text_trainer.py can use
         # it (instead of the config LR) as the base for lr_utils on subsequent runs.
         try:
-            from state_manager import get_state, set_state
             _state = get_state()
             if "train" not in _state:
                 _state["train"] = {}
