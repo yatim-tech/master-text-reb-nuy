@@ -326,6 +326,11 @@ def main():
     run_lr_finder = train_request.get("run_lr_finder", True)
     distributed_type = train_request.get("distributed", "ddp")
     use_deepspeed = (distributed_type == "ds")
+    # Only run LR finder on the very first training pass (initial / first_time).
+    # On subsequent lr_utils-driven runs (checking_mode=second_time/none)
+    # the LR is already set by text_trainer.py — no need to re-search.
+    is_initial_run = train_request.get("checking_mode", "first_time") in ("first_time", "none", "")
+    run_lr_finder = run_lr_finder and is_initial_run
 
     if run_lr_finder and not use_deepspeed:
         # Flush cache before finder to reclaim fragmented allocations
@@ -443,8 +448,22 @@ def main():
 
         training_args.learning_rate = effective_lr
         log_info(f"[LR Finder/DPO] Final LR set for training: {effective_lr:.2e}")
+        # Persist the found LR into shared state so text_trainer.py can use
+        # it as the base for lr_utils on subsequent runs.
+        try:
+            from state_manager import get_state, set_state
+            _state = get_state()
+            if "train" not in _state:
+                _state["train"] = {}
+            _state["train"]["found_lr"] = effective_lr
+            if is_main_process(LOCAL_RANK):
+                set_state(_state)
+        except Exception as _se:
+            log_info(f"[LR Finder/DPO] Could not persist found_lr to state: {_se}")
     else:
-        if use_deepspeed:
+        if not is_initial_run:
+            log_info("[LR Finder/DPO] Skipped — non-initial run (lr_utils controls LR now)")
+        elif use_deepspeed:
             log_info("[LR Finder/DPO] Skipped — DeepSpeed ZeRO mode")
         else:
             log_info("[LR Finder/DPO] Skipped — disabled via run_lr_finder=False")
