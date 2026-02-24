@@ -438,7 +438,7 @@ def main():
                     current_lr = float(found_lr if found_lr is not None else state["train"]["lr"])
                     print(f"[text_trainer] lr_utils base LR: {current_lr:.4e} "
                           f"({'from LR finder' if found_lr is not None else 'from config'})", flush=True)
-                    state["lrs"] = lr_utils.extend_learning_rates(current_lr, n_runs, log_range=get_log_scale(args.task_type))
+                    state["lrs"] = lr_utils.smart_extend_learning_rates(current_lr, n_runs, log_range=get_log_scale(args.task_type))
                     assert len(state["lrs"]) == n_runs, f"Number of learning rates {state['lrs']} should be equal to number of runs {n_runs}"
                     state["runs"] = []
                 
