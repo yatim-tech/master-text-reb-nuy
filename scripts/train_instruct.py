@@ -396,6 +396,8 @@ def main():
     use_deepspeed = (distributed_type == "ds")
 
     if run_lr_finder and not use_deepspeed:
+        # Fix 5: Flush cache before finder to reclaim any fragmented allocations
+        import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
         log_info(
             f"[LR Finder] Running on {training_args.world_size} GPU(s) in parallel. "
             f"Current LR from config: {training_args.learning_rate:.2e}"
@@ -413,6 +415,8 @@ def main():
                 time_budget_minutes=5.0,
                 preserve_state=True,
                 lora=training_args.use_lora,
+                # Fix 6: propagate gradient checkpointing into finder
+                use_gradient_checkpointing=training_args.gradient_checkpointing,
             )
             log_info(f"[LR Finder] Selected LR: {effective_lr:.2e} (after {num_evals} evals)")
         except torch.cuda.OutOfMemoryError:
@@ -436,6 +440,8 @@ def main():
                     time_budget_minutes=5.0,
                     preserve_state=True,
                     lora=training_args.use_lora,
+                    # Fix 7: always use gradient checkpointing on OOM retry
+                    use_gradient_checkpointing=True,
                 )
                 log_info(f"[LR Finder] (retry) Selected LR: {effective_lr:.2e}")
             except Exception as e2:

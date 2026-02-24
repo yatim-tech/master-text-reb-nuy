@@ -146,6 +146,7 @@ def find_lr_and_continue(
     num_candidates: int = 2,
     preserve_state: bool = True,
     lora: bool = True,
+    use_gradient_checkpointing: bool = False,
 ):
     """
     Multi-GPU-safe LR finder based on Leslie Smith's approach.
@@ -182,6 +183,16 @@ def find_lr_and_continue(
     rank = LOCAL_RANK
     is_main_rank = (rank == 0)
 
+    # Enable gradient checkpointing to reduce activation memory during sweep
+    if use_gradient_checkpointing:
+        try:
+            base_model.gradient_checkpointing_enable()
+            if is_main_rank:
+                logger.info("[LR Finder] Gradient checkpointing enabled inside finder")
+        except Exception as _gc_err:
+            if is_main_rank:
+                logger.warning(f"[LR Finder] Could not enable gradient checkpointing: {_gc_err}")
+
     if is_main_rank:
         logger.info(
             f"[LR Finder] Starting — WORLD_SIZE={WORLD_SIZE}, "
@@ -216,16 +227,15 @@ def find_lr_and_continue(
     batch = trainer._prepare_inputs(batch)
 
     model.train()
-    # Use base_model.parameters() for single-GPU; model.parameters() works
-    # for DDP too since DDP forwards to module.parameters() internally.
-    optimizer = AdamW(model.parameters(), lr=start_lr)
 
+    # Fix 1: Use no_grad for timing to avoid allocating AdamW optimizer states
+    # on GPU (moment vectors alone can exhaust remaining VRAM on large models).
+    # Forward-pass time is proportional to full step time, which is sufficient
+    # to estimate the per-step budget.
     test_start_time = time.time()
     for _ in range(test_steps):
-        optimizer.zero_grad()
-        loss = trainer.compute_loss(model, batch)
-        loss.backward()
-        optimizer.step()
+        with torch.no_grad():
+            _ = trainer.compute_loss(model, batch)
 
     time_per_step = (time.time() - test_start_time) / test_steps
     if is_main_rank:
@@ -247,6 +257,11 @@ def find_lr_and_continue(
                 param.copy_(initial_state[name].to(param.device))
             elif not lora and name in initial_state:
                 param.copy_(initial_state[name].to(param.device))
+
+    # Fix 3: Aggressively free any cached allocations before the sweep.
+    # On near-full GPUs the difference between "fits" and OOM is a few MiB.
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Sync all ranks before the sweep
     _dist_barrier()
@@ -378,20 +393,41 @@ def find_lr_and_continue(
         else:
             loss_exploration_quality = 0.5
 
+        # Fix 4: Inflection-point-aware LR selection for better L2 loss.
+        # The inflection point is where the 2nd derivative of the smoothed loss
+        # turns positive — i.e., loss stops curving down and starts curving up.
+        # This is the boundary of the convex bowl; we must stay left of it.
+        # np.diff(arr, 2) produces len-2 array, so index offsets by +2.
+        second_deriv = np.diff(smoothed_losses_arr, 2)
+        inflection_candidates = np.where(second_deriv > 0)[0]
+        if len(inflection_candidates) > 0:
+            # +2 to account for the 2-step index shift from np.diff(n=2)
+            inflection_idx = int(inflection_candidates[0]) + 2
+        else:
+            inflection_idx = len(lrs_arr)  # no inflection found — use full range
+
+        if is_main_rank:
+            logger.info(
+                f"[LR Finder] Inflection point at idx={inflection_idx} "
+                f"(LR≈{lrs_arr[min(inflection_idx, len(lrs_arr)-1)]:.2e})"
+            )
+
         if steepest_idx > 1:
             if loss_exploration_quality > 0.8:
                 divider = 1.3
             else:
                 divider = 1.8
 
-            final_idx = max(0, steepest_idx)
-            candidate_lr = lrs_arr[final_idx] / divider
+            # Stay safely on the descending side of the inflection point
+            safe_idx = min(steepest_idx, max(0, inflection_idx - 2))
+            candidate_lr = lrs_arr[safe_idx] / divider
             min_bound = lrs_arr[min_loss_idx] / 2.0
             final_lr = max(candidate_lr, min_bound)
 
             if is_main_rank:
                 logger.info(
                     f"[LR Finder] Steepest descent at LR: {lrs_arr[steepest_idx]:.2e}, "
+                    f"safe_idx={safe_idx}, "
                     f"min loss at LR: {lrs_arr[min_loss_idx]:.2e}, "
                     f"selected: {final_lr:.2e} (divider={divider:.1f})"
                 )
