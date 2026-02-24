@@ -328,6 +328,8 @@ def main():
     use_deepspeed = (distributed_type == "ds")
 
     if run_lr_finder and not use_deepspeed:
+        # Flush cache before finder to reclaim fragmented allocations
+        import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
         log_info(
             f"[LR Finder/DPO] Running SFT-proxy finder on {training_args.world_size} GPU(s). "
             f"Config LR: {training_args.learning_rate:.2e}"
@@ -400,17 +402,19 @@ def main():
                 ),
             )
 
-            min_lr = training_args.learning_rate * 0.1
-            max_lr = training_args.learning_rate * 10.0
+            min_lr = training_args.learning_rate * 0.5
+            max_lr = training_args.learning_rate * 2.0
             use_lora = (peft_config is not None)
 
             effective_lr, _, _, num_evals = find_lr_and_continue(
                 trainer=lr_finder_trainer,
                 start_lr=min_lr,
                 end_lr=max_lr,
-                time_budget_minutes=5.0,
+                time_budget_minutes=10.0,
                 preserve_state=True,
                 lora=use_lora,
+                # propagate gradient checkpointing into finder
+                use_gradient_checkpointing=training_args.gradient_checkpointing,
             )
             log_info(f"[LR Finder/DPO] Selected LR: {effective_lr:.2e} ({num_evals} evals)")
             del lr_finder_trainer, lr_finder_hf_args
@@ -426,7 +430,9 @@ def main():
                 )
                 effective_lr, _, _, _ = find_lr_and_continue(
                     trainer=lr_finder_trainer, start_lr=min_lr, end_lr=max_lr,
-                    time_budget_minutes=5.0, preserve_state=True, lora=use_lora,
+                    time_budget_minutes=10.0, preserve_state=True, lora=use_lora,
+                    # always enable gradient checkpointing on OOM retry
+                    use_gradient_checkpointing=True,
                 )
             except Exception as e2:
                 log_info(f"[LR Finder/DPO] Retry failed: {e2} — using config LR")

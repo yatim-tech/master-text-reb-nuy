@@ -404,15 +404,15 @@ def main():
         )
         # Use a wider sweep range: 10× below to 10× above the config LR.
         # The finder will stop early if loss diverges before reaching end_lr.
-        min_lr = training_args.learning_rate * 0.1
-        max_lr = training_args.learning_rate * 10.0
+        min_lr = training_args.learning_rate * 0.5
+        max_lr = training_args.learning_rate * 2.0
 
         try:
             effective_lr, best_state_dict, _, num_evals = find_lr_and_continue(
                 trainer=trainer,
                 start_lr=min_lr,
                 end_lr=max_lr,
-                time_budget_minutes=5.0,
+                time_budget_minutes=10.0,
                 preserve_state=True,
                 lora=training_args.use_lora,
                 # Fix 6: propagate gradient checkpointing into finder
@@ -437,7 +437,7 @@ def main():
                     trainer=lr_finder_trainer,
                     start_lr=min_lr,
                     end_lr=max_lr,
-                    time_budget_minutes=5.0,
+                    time_budget_minutes=10.0,
                     preserve_state=True,
                     lora=training_args.use_lora,
                     # Fix 7: always use gradient checkpointing on OOM retry

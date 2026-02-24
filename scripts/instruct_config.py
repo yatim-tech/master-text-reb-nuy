@@ -7,6 +7,7 @@ from model_utility import (
     get_gpu_count,
 )
 from copy import deepcopy
+from lrs_lookup import get_instruct_lr
 
 
 FIXED_BS_CONFIG = {
@@ -263,8 +264,15 @@ def get_training_json(train_info: dict) -> dict:
     if model_architecture.strip().lower() in ["gptossforcausallm"]:
         run_config["use_lora"] = False  # currently, gptoss does not support lora
 
-    # lr_finder_les.py (Leslie Smith) will find the optimal LR at runtime,
-    # so we only apply reg_ratio to the base config LR here.
+    if train_info["find_lk_lr"]:
+        # get lr from lrs_lookup.py
+        lr = get_instruct_lr(model_name)
+        if lr is not None:
+            print(f"Using lr from lk: {lr}", flush=True)
+            run_config["learning_rate"] = lr
+        else:
+            print(f"Using lr from config: {run_config['learning_rate']}", flush=True)
+
     run_config["learning_rate"] *= train_info["reg_ratio"]
     run_cmd = get_run_cmd(run_config, run_config["gpu_nums"])
     train_request = deepcopy(train_info)
