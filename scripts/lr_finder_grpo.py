@@ -1,26 +1,24 @@
 """
-lr_finder_grpo.py — GRPO-bespoke LR Finder using Reward Signal
+lr_finder_grpo.py — GRPO-bespoke LR Finder using Reward-Weighted Log-Prob Signal
 
-Unlike the standard LR finder (lr_finder_les.py) which uses CE loss as a metric,
-this finder uses *reward improvement* as the signal to select the optimal LR.
+Metric: reward-weighted log-probability improvement.
 
-Why reward and not loss?
-  - GRPO loss is not an absolute value; it depends on reward scale and clipping
-  - Reward improvement is the actual downstream objective we care about
-  - Allows the finder to stay true to the GRPO training objective
+Why NOT reward re-generation?
+  After only 3 gradient steps at LR=2e-6..32e-6, the weight delta is ~6e-6.
+  This is too small to flip any argmax token under greedy decoding, so
+  reward stays identical (all delta=0) regardless of LR.
 
-Algorithm:
-  1. Save LoRA model state
-  2. Compute baseline reward on a mini-batch (before any update)
-  3. For each LR candidate (log-spaced):
-       a. Restore model state
-       b. Run N GRPO-lite steps (gen + reward + policy gradient)
-       c. Re-generate on same prompts → measure reward_after
-       d. Record reward_delta = reward_after - reward_baseline
-  4. Select LR with highest reward_delta (early-stop on collapse)
-  5. Restore original model state, return selected LR
+Why log-prob improvement?
+  Even a 6e-6 weight change measurably shifts log P(completion|prompt).
+  Weighted by reward, this directly measures what GRPO optimises:
+  "Does this LR cause the model to assign higher probability to good completions?"
 
-DDP-safe: reward_delta is all-reduced across ranks after each candidate.
+  signal(lr) = mean( reward_i * (log_p_after_i - log_p_before_i) )
+
+  Higher signal → this LR is better at reinforcing high-reward completions.
+
+DDP-safe: signal is all_reduce'd across ranks after each candidate.
+AdamW-free: uses direct gradient update (param -= lr * grad), zero extra VRAM.
 """
 
 import time
@@ -83,8 +81,18 @@ def _save_lora_state(model) -> dict:
     }
 
 
-def _restore_lora_state(model, state: dict):
-    """Restore LoRA + lm_head weights from a CPU state dict."""
+def _save_full_state(model) -> dict:
+    """Save all trainable weights (CPU clone)."""
+    base = model.module if hasattr(model, "module") else model
+    return {
+        name: param.detach().cpu().clone()
+        for name, param in base.named_parameters()
+        if param.requires_grad
+    }
+
+
+def _restore_state(model, state: dict):
+    """Restore saved weights from a CPU state dict."""
     base = model.module if hasattr(model, "module") else model
     with torch.no_grad():
         for name, param in base.named_parameters():
@@ -122,37 +130,83 @@ def _generate_completions(
                 do_sample=False,        # greedy — fast & deterministic
                 pad_token_id=tokenizer.eos_token_id,
             )
-            # Decode only the newly generated tokens
             new_ids = output_ids[0, inputs["input_ids"].shape[1]:]
             completions.append(tokenizer.decode(new_ids, skip_special_tokens=True))
     model.train()
     return completions
 
 
-def _compute_mean_reward(
+def _compute_rewards(
     reward_funcs: List[Callable],
     completions: List[str],
     extra_data: Optional[List] = None,
-) -> float:
+) -> List[float]:
     """
-    Aggregate reward across all reward functions (equal weight).
-    Handles both standard and extra_data-aware reward funcs.
+    Compute per-completion reward (averaged across all reward functions).
+    Returns a list of float rewards, one per completion.
     """
     import inspect
-    total = 0.0
-    count = 0
+    all_rewards = []
     for func in reward_funcs:
         try:
             sig = inspect.signature(func)
             if "extra_data" in sig.parameters and extra_data is not None:
-                rewards = func(completions, extra_data=extra_data)
+                r = func(completions, extra_data=extra_data)
             else:
-                rewards = func(completions)
-            total += float(np.mean(rewards))
-            count += 1
+                r = func(completions)
+            all_rewards.append([float(x) for x in r])
         except Exception as e:
             logger.warning(f"[LR Finder/GRPO] reward func error (skipped): {e}")
-    return total / count if count > 0 else 0.0
+            all_rewards.append([0.0] * len(completions))
+
+    if not all_rewards:
+        return [0.0] * len(completions)
+    # Average across reward functions per completion
+    return [float(np.mean([all_rewards[f][i] for f in range(len(all_rewards))]))
+            for i in range(len(completions))]
+
+
+def _compute_logprobs(
+    model,
+    tokenizer,
+    prompts: List[str],
+    completions: List[str],
+    device: str = "cuda",
+) -> List[float]:
+    """
+    Compute mean log-probability of each completion given its prompt.
+    Only completion tokens are scored (prompt tokens are masked).
+    This is sensitive to even tiny weight changes — unlike greedy output.
+    """
+    model.eval()
+    logprobs = []
+    with torch.no_grad():
+        for prompt, completion in zip(prompts, completions):
+            if not completion.strip():
+                logprobs.append(0.0)
+                continue
+
+            full_text = prompt + completion
+            enc_full = tokenizer(
+                full_text, return_tensors="pt",
+                truncation=True, max_length=768,
+            ).to(device)
+            enc_prompt = tokenizer(
+                prompt, return_tensors="pt",
+                truncation=True, max_length=512,
+            ).to(device)
+
+            prompt_len = enc_prompt["input_ids"].shape[1]
+            input_ids = enc_full["input_ids"]
+            labels = input_ids.clone()
+            labels[0, :prompt_len] = -100  # mask prompt
+
+            outputs = model(**enc_full, labels=labels)
+            # outputs.loss = mean NLL of completion tokens (scalar)
+            logprobs.append(-float(outputs.loss))  # higher is better
+
+    model.train()
+    return logprobs
 
 
 # ──────────────────────────────────────── GRPO-lite step ─────────────────────
@@ -168,7 +222,6 @@ def _grpo_lite_steps(
     n_steps: int = 3,
     max_gen_tokens: int = 64,
     num_generations: int = 2,
-    beta: float = 0.04,
     device: str = "cuda",
 ):
     """
@@ -176,14 +229,8 @@ def _grpo_lite_steps(
 
     Why no AdamW?
       AdamW stores m1 and m2 moment vectors for every trainable parameter.
-      On near-full GPUs this alone can cause OOM (same reason as lr_finder_les.py).
+      On near-full GPUs this alone can cause OOM (same reason as lr_finder_les.py Fix 1).
       Direct gradient update (param -= lr * grad) requires zero extra VRAM.
-
-    Steps per iteration:
-      - Generate num_generations completions per prompt (short, greedy)
-      - Compute rewards via reward_funcs
-      - Compute advantage-weighted policy gradient loss
-      - loss.backward() then apply param.data -= lr * param.grad directly
     """
     import inspect
     model.train()
@@ -193,14 +240,12 @@ def _grpo_lite_steps(
         all_prompts = []
         all_completions = []
 
-        # Generate multiple completions per prompt
+        # Generate completions (stochastic — diverse signal for advantage)
         for prompt in prompts:
             for _ in range(num_generations):
                 inputs = tokenizer(
-                    prompt,
-                    return_tensors="pt",
-                    truncation=True,
-                    max_length=512,
+                    prompt, return_tensors="pt",
+                    truncation=True, max_length=512,
                 ).to(device)
                 with torch.no_grad():
                     out_ids = model.generate(
@@ -215,16 +260,13 @@ def _grpo_lite_steps(
                 all_prompts.append(prompt)
                 all_completions.append(completion)
 
-        # Compute rewards for all completions
+        # Compute rewards
         raw_rewards = []
         for func in reward_funcs:
             try:
                 sig = inspect.signature(func)
                 if "extra_data" in sig.parameters and extra_data is not None:
-                    expanded_extra = []
-                    for ed in extra_data:
-                        for _ in range(num_generations):
-                            expanded_extra.append(ed)
+                    expanded_extra = [ed for ed in extra_data for _ in range(num_generations)]
                     r = func(all_completions, extra_data=expanded_extra)
                 else:
                     r = func(all_completions)
@@ -232,15 +274,13 @@ def _grpo_lite_steps(
             except Exception:
                 raw_rewards.append([0.0] * len(all_completions))
 
-        # Average across reward functions
         rewards_tensor = torch.tensor(
             [float(np.mean([raw_rewards[f][i] for f in range(len(raw_rewards))]))
              for i in range(len(all_completions))],
-            dtype=torch.float32,
-            device=device,
+            dtype=torch.float32, device=device,
         )
 
-        # Compute advantages: normalize per prompt group
+        # Advantages: normalize per-prompt group
         advantages = rewards_tensor.clone()
         for pi in range(len(prompts)):
             start = pi * num_generations
@@ -250,26 +290,22 @@ def _grpo_lite_steps(
             std = group.std().clamp(min=1e-4)
             advantages[start:end] = (group - mean) / std
 
-        # Zero gradients manually (no optimizer object needed)
+        # Zero gradients
         for p in base.parameters():
             if p.grad is not None:
                 p.grad.zero_()
 
-        # Compute advantage-weighted policy gradient loss
+        # Advantage-weighted policy gradient loss
         total_loss = torch.tensor(0.0, device=device, requires_grad=True)
         for i, (prompt, completion) in enumerate(zip(all_prompts, all_completions)):
             full_text = prompt + completion
             inputs = tokenizer(
-                full_text,
-                return_tensors="pt",
-                truncation=True,
-                max_length=768,
+                full_text, return_tensors="pt",
+                truncation=True, max_length=768,
             ).to(device)
             prompt_len = tokenizer(
-                prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=512,
+                prompt, return_tensors="pt",
+                truncation=True, max_length=512,
             )["input_ids"].shape[1]
             labels = inputs["input_ids"].clone()
             labels[0, :prompt_len] = -100
@@ -280,8 +316,7 @@ def _grpo_lite_steps(
 
         total_loss.backward()
 
-        # ── Direct gradient update — no optimizer state (VRAM-safe) ──────────
-        # Clip first so large gradients don't produce out-of-range LR steps.
+        # Direct gradient update — no optimizer state (VRAM-safe)
         torch.nn.utils.clip_grad_norm_(
             [p for p in base.parameters() if p.requires_grad], max_norm=1.0
         )
@@ -307,27 +342,32 @@ def find_grpo_lr(
     num_generations: int = 2,
     time_budget_minutes: float = 8.0,
     lora: bool = True,
-    beta: float = 0.04,
     sample_size: int = 6,
 ) -> float:
     """
-    GRPO-bespoke LR finder using reward improvement as the selection metric.
+    GRPO-bespoke LR finder using reward-weighted log-prob improvement as metric.
+
+    Signal per LR candidate:
+        signal = mean( reward_i * (log_p_after_i - log_p_before_i) )
+
+    This measures how much each LR causes the model to assign higher
+    probability to high-reward completions — exactly what GRPO optimises.
+    It is sensitive to weight changes as small as 1e-6, unlike reward
+    re-generation which requires a token-level argmax flip.
 
     Args:
-        model:               The GRPO model (may be DDP-wrapped)
+        model:               The GRPO model (optionally DDP-wrapped)
         tokenizer:           Tokenizer
-        reward_funcs:        List of callable reward functions (same as GRPOTrainer)
-        dataset:             Dataset with 'prompt' column (uses dev_ds, ~200 samples)
-        start_lr:            Minimum LR to explore
-        end_lr:              Maximum LR to explore
-        num_candidates:      Number of LR candidates to try (default: 8)
-        steps_per_candidate: GRPO-lite update steps per LR candidate
-        max_gen_tokens:      Max new tokens during finder (keep short for speed)
-        num_generations:     Completions per prompt during GRPO-lite step
-        time_budget_minutes: Hard time limit for the entire finder
-        lora:                If True, saves/restores only LoRA + lm_head params
-        beta:                GRPO beta (unused in lite version, for future)
-        sample_size:         Number of prompts to use per candidate evaluation
+        reward_funcs:        List of callable reward functions
+        dataset:             Dataset with 'prompt' column (uses dev_ds)
+        start_lr / end_lr:   LR search range
+        num_candidates:      Number of LR candidates (log-spaced)
+        steps_per_candidate: GRPO-lite gradient steps per candidate
+        max_gen_tokens:      Max new tokens for baseline + lite generation
+        num_generations:     Completions per prompt in GRPO-lite step
+        time_budget_minutes: Hard time ceiling
+        lora:                If True saves/restores only LoRA + lm_head params
+        sample_size:         Number of prompts to sample from dataset
 
     Returns:
         float: Selected learning rate
@@ -345,20 +385,11 @@ def find_grpo_lr(
         )
 
     # ── 1. Save model state ──────────────────────────────────────────────────
-    if lora:
-        saved_state = _save_lora_state(model)
-    else:
-        base = model.module if hasattr(model, "module") else model
-        saved_state = {
-            name: param.detach().cpu().clone()
-            for name, param in base.named_parameters()
-            if param.requires_grad
-        }
+    saved_state = _save_lora_state(model) if lora else _save_full_state(model)
 
-    # ── 2. Prepare mini-batch from dataset ──────────────────────────────────
+    # ── 2. Prepare fixed mini-batch ──────────────────────────────────────────
     ds_list = dataset.to_list()
     sample_size = min(sample_size, len(ds_list))
-    # Use a fixed seed slice for reproducibility across candidates
     rng = np.random.default_rng(seed=42)
     indices = rng.choice(len(ds_list), size=sample_size, replace=False)
     sample = [ds_list[i] for i in indices]
@@ -371,52 +402,46 @@ def find_grpo_lr(
 
     if _is_main():
         logger.info(
-            f"[LR Finder/GRPO] Using {sample_size} prompts for reward measurement. "
-            f"has_extra_data={has_extra}"
+            f"[LR Finder/GRPO] {sample_size} prompts, has_extra_data={has_extra}"
         )
 
-    # ── 3. Compute baseline reward ───────────────────────────────────────────
+    # ── 3. Baseline: generate completions + measure rewards + log-probs ──────
     baseline_completions = _generate_completions(
-        model, tokenizer, prompts,
-        max_new_tokens=max_gen_tokens, device=device
+        model, tokenizer, prompts, max_new_tokens=max_gen_tokens, device=device
     )
-    baseline_reward = _compute_mean_reward(reward_funcs, baseline_completions, extra_data)
-    baseline_reward = _dist_avg(baseline_reward)
+    baseline_rewards = _compute_rewards(reward_funcs, baseline_completions, extra_data)
+    baseline_logprobs = _compute_logprobs(model, tokenizer, prompts, baseline_completions, device)
 
+    # Average baseline reward just for logging
+    baseline_reward_mean = _dist_avg(float(np.mean(baseline_rewards)))
     if _is_main():
-        logger.info(f"[LR Finder/GRPO] Baseline reward: {baseline_reward:.4f}")
+        logger.info(
+            f"[LR Finder/GRPO] Baseline — reward: {baseline_reward_mean:.4f}, "
+            f"mean_logprob: {float(np.mean(baseline_logprobs)):.4f}"
+        )
 
     _barrier()
 
-    # ── 4. Sweep over LR candidates ─────────────────────────────────────────
+    # ── 4. Sweep ──────────────────────────────────────────────────────────────
     lr_candidates = np.logspace(
         np.log10(start_lr), np.log10(end_lr), num=num_candidates
     )
-    reward_deltas = []
-    best_lr = float(lr_candidates[num_candidates // 2])  # fallback: middle
-
-    collapse_threshold = max(0.0, baseline_reward * 0.3)  # reward dropped 70%
+    signals = []  # reward_weighted log-prob improvement per candidate
 
     for i, candidate_lr in enumerate(lr_candidates):
         if time.time() - start_time > time_budget_seconds * 0.85:
             if _is_main():
-                logger.info(
-                    f"[LR Finder/GRPO] Time budget reached at candidate {i+1}/{num_candidates}"
-                )
+                logger.info(f"[LR Finder/GRPO] Time budget reached at candidate {i+1}")
             break
 
-        # Restore original state before each candidate
-        _restore_lora_state(model, saved_state)
+        _restore_state(model, saved_state)
         gc.collect()
         torch.cuda.empty_cache()
         _barrier()
 
         if _is_main():
-            logger.info(
-                f"[LR Finder/GRPO] Candidate {i+1}/{num_candidates}, LR: {candidate_lr:.2e}"
-            )
+            logger.info(f"[LR Finder/GRPO] Candidate {i+1}/{num_candidates}, LR: {candidate_lr:.2e}")
 
-        # Run GRPO-lite update steps (direct gradient, no AdamW)
         try:
             _grpo_lite_steps(
                 model=model,
@@ -428,7 +453,6 @@ def find_grpo_lr(
                 n_steps=steps_per_candidate,
                 max_gen_tokens=max_gen_tokens,
                 num_generations=num_generations,
-                beta=beta,
                 device=device,
             )
             gc.collect()
@@ -437,68 +461,66 @@ def find_grpo_lr(
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
                 if _is_main():
-                    logger.warning(
-                        f"[LR Finder/GRPO] OOM at LR={candidate_lr:.2e}, skipping."
-                    )
+                    logger.warning(f"[LR Finder/GRPO] OOM at LR={candidate_lr:.2e}, skipping.")
                 torch.cuda.empty_cache()
-                reward_deltas.append(-9999.0)
+                signals.append(-9999.0)
+                _barrier()
                 continue
             else:
                 raise
 
-        # Measure reward after update
-        after_completions = _generate_completions(
-            model, tokenizer, prompts,
-            max_new_tokens=max_gen_tokens, device=device
+        # Measure log-prob of same baseline completions under updated model
+        after_logprobs = _compute_logprobs(
+            model, tokenizer, prompts, baseline_completions, device
         )
-        after_reward = _compute_mean_reward(reward_funcs, after_completions, extra_data)
-        after_reward = _dist_avg(after_reward)
 
-        delta = after_reward - baseline_reward
-        reward_deltas.append(delta)
+        # Reward-weighted log-prob improvement
+        # signal = sum(reward_i * delta_logprob_i) — positive means high-reward
+        # completions became MORE likely (good), negative means less likely (bad).
+        delta_logprobs = [a - b for a, b in zip(after_logprobs, baseline_logprobs)]
+        signal = float(np.mean([
+            r * d for r, d in zip(baseline_rewards, delta_logprobs)
+        ]))
+        signal = _dist_avg(signal)  # consensus across ranks
+        signals.append(signal)
 
         if _is_main():
             logger.info(
                 f"[LR Finder/GRPO] LR={candidate_lr:.2e} → "
-                f"reward_before={baseline_reward:.4f}, "
-                f"reward_after={after_reward:.4f}, "
-                f"delta={delta:+.4f}"
+                f"signal={signal:+.6f} "
+                f"(mean_Δlogp={float(np.mean(delta_logprobs)):+.4f})"
             )
 
-        # Early stop: catastrophic reward collapse
-        if after_reward < collapse_threshold and baseline_reward > 0:
+        # Early stop: model collapsed (all log-probs crashed)
+        mean_after_lp = float(np.mean(after_logprobs))
+        if mean_after_lp < float(np.mean(baseline_logprobs)) - 2.0:
             if _is_main():
                 logger.warning(
-                    f"[LR Finder/GRPO] Reward collapsed at LR={candidate_lr:.2e} "
-                    f"({after_reward:.4f} < {collapse_threshold:.4f}). Stopping sweep."
+                    f"[LR Finder/GRPO] Log-prob collapse at LR={candidate_lr:.2e}, stopping."
                 )
             break
 
     # ── 5. Select best LR ────────────────────────────────────────────────────
-    evaluated_lrs = lr_candidates[:len(reward_deltas)]
+    evaluated_lrs = lr_candidates[:len(signals)]
 
-    if len(reward_deltas) == 0 or all(d <= -9999 for d in reward_deltas):
-        if _is_main():
-            logger.warning(
-                "[LR Finder/GRPO] No valid reward deltas. Falling back to start_lr."
-            )
+    if len(signals) == 0 or all(s <= -9999 for s in signals):
         best_lr = float(start_lr)
+        if _is_main():
+            logger.warning("[LR Finder/GRPO] No valid signals. Falling back to start_lr.")
     else:
-        valid_mask = [d > -9999 for d in reward_deltas]
-        valid_deltas = [d for d, m in zip(reward_deltas, valid_mask) if m]
+        valid_mask = [s > -9999 for s in signals]
+        valid_signals = [s for s, m in zip(signals, valid_mask) if m]
         valid_lrs = [lr for lr, m in zip(evaluated_lrs, valid_mask) if m]
-
-        best_idx = int(np.argmax(valid_deltas))
+        best_idx = int(np.argmax(valid_signals))
         best_lr = float(valid_lrs[best_idx])
-
         if _is_main():
             logger.info(
                 f"[LR Finder/GRPO] Best LR: {best_lr:.2e} "
-                f"(reward_delta={valid_deltas[best_idx]:+.4f})"
+                f"(signal={valid_signals[best_idx]:+.6f})"
             )
 
     # ── 6. Restore original model state ─────────────────────────────────────
-    _restore_lora_state(model, saved_state)
+    _restore_state(model, saved_state)
     del saved_state
     gc.collect()
     torch.cuda.empty_cache()
@@ -507,8 +529,7 @@ def find_grpo_lr(
     elapsed = time.time() - start_time
     if _is_main():
         logger.info(
-            f"[LR Finder/GRPO] Done. Selected LR = {best_lr:.2e} "
-            f"(elapsed {elapsed:.1f}s)"
+            f"[LR Finder/GRPO] Done. Selected LR = {best_lr:.2e} (elapsed {elapsed:.1f}s)"
         )
 
     return best_lr
