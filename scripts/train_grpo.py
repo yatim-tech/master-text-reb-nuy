@@ -473,7 +473,7 @@ def main():
     #   - reward_delta is all_reduce'd inside the finder per candidate.
     #   - After the finder, we broadcast the chosen LR from rank 0 to all
     #     other ranks so every rank is guaranteed to train with the same LR.
-    _find_lk_lr = train_info.get("find_lk_lr", False)
+    _find_lk_lr = train_request.get("find_lk_lr", False)
     if _find_lk_lr:
         import torch.distributed as dist
         from lr_finder_grpo import find_grpo_lr
