@@ -454,7 +454,63 @@ def main():
 
     sample_data = dev_ds.to_list()[:10] if len(dev_ds) > 10 else None
     wrapped_reward_funcs = get_reward_funcs(train_request["dataset_type"], sample_data, has_extra_column)
-    
+
+    # ── GRPO LR Finder ────────────────────────────────────────────────────────
+    # GRPO training is a single-run only (text_trainer sets mode="finish"
+    # immediately for GRPO tasks, so lr_utils multi-run is never triggered).
+    # We run the reward-based LR finder here and use the result directly.
+    #
+    # DDP safety:
+    #   - All ranks participate in find_grpo_lr() in parallel (no idle ranks).
+    #   - reward_delta is all_reduce'd inside the finder per candidate.
+    #   - After the finder, we broadcast the chosen LR from rank 0 to all
+    #     other ranks so every rank is guaranteed to train with the same LR.
+    _find_lk_lr = train_info.get("find_lk_lr", False)
+    if _find_lk_lr:
+        import torch.distributed as dist
+        from lr_finder_grpo import find_grpo_lr
+
+        log_info(
+            f"[LR Finder/GRPO] Running reward-based LR finder "
+            f"(config LR: {training_args.learning_rate:.2e})"
+        )
+
+        _start_lr = training_args.learning_rate * 0.25
+        _end_lr   = training_args.learning_rate * 4.0
+
+        found_lr = find_grpo_lr(
+            model=model,
+            tokenizer=tokenizer,
+            reward_funcs=wrapped_reward_funcs,
+            dataset=dev_ds,
+            start_lr=_start_lr,
+            end_lr=_end_lr,
+            num_candidates=8,
+            steps_per_candidate=3,
+            max_gen_tokens=64,
+            num_generations=2,
+            time_budget_minutes=10.0,
+            lora=(peft_config is not None or "lora_model" in train_request),
+        )
+
+        # ── Broadcast LR from rank 0 to all ranks ──────────────────────────
+        # find_grpo_lr already all_reduces reward_delta per candidate, but
+        # floating-point non-determinism can still cause tiny divergence.
+        # A single broadcast guarantees every rank trains with the exact same LR.
+        if dist.is_available() and dist.is_initialized():
+            lr_tensor = torch.tensor(found_lr, dtype=torch.float64, device=f"cuda:{LOCAL_RANK}")
+            dist.broadcast(lr_tensor, src=0)
+            found_lr = lr_tensor.item()
+
+        log_info(
+            f"[LR Finder/GRPO] Selected LR: {found_lr:.2e} "
+            f"(was {training_args.learning_rate:.2e})"
+        )
+        training_args.learning_rate = found_lr
+    else:
+        log_info("[LR Finder/GRPO] Skipped — find_lk_lr is disabled")
+    # ─────────────────────────────────────────────────────────────────────────
+
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=wrapped_reward_funcs,
