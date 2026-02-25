@@ -312,6 +312,14 @@ def get_reward_funcs(dataset_type: dict, sample_data, has_extra_column: bool):
 
 def main():
     """Format of training requests"""
+    # Prevent NCCL from using /dev/shm — the container's /dev/shm is too small.
+    # Must be set before dist is initialized (before GRPOTrainer / torchrun init).
+    import os as _os
+    if not _os.environ.get("NCCL_SHM_DISABLE"):
+        _os.environ["NCCL_SHM_DISABLE"] = "1"
+    if not _os.environ.get("NCCL_P2P_DISABLE"):
+        _os.environ["NCCL_P2P_DISABLE"] = "1"
+
     argument_parser = transformers.HfArgumentParser((TrainingArguments, ModelConfig))
     training_args, model_args = argument_parser.parse_args_into_dataclasses()
 
