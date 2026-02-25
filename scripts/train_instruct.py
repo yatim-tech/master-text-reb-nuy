@@ -193,6 +193,14 @@ def get_max_length_config():
 
 def main():
     """Format of training requests"""
+    # Prevent NCCL from using /dev/shm (shared memory) which can exhaust
+    # the small /dev/shm allocation in container environments. Use
+    # network-based transport instead. Must be set before dist is init'd.
+    import os as _os
+    if not _os.environ.get("NCCL_SHM_DISABLE"):
+        _os.environ["NCCL_SHM_DISABLE"] = "1"
+    if not _os.environ.get("NCCL_P2P_DISABLE"):
+        _os.environ["NCCL_P2P_DISABLE"] = "1"
     argument_parser = transformers.HfArgumentParser((TrainingArguments, LoraArguments))
     (training_args, lora_args) = argument_parser.parse_args_into_dataclasses()
     train_info = json.load(open(training_args.request_path, "r"))
@@ -478,6 +486,25 @@ def main():
             log_info("[LR Finder] Skipped — DeepSpeed mode (ZeRO incompatible with param manipulation)")
         else:
             log_info("[LR Finder] Skipped — disabled via run_lr_finder=False")
+
+    # ------------------------------------------------------------------ #
+    # Post-LR-Finder cleanup                                               #
+    # The finder ran the model outside DDP. Before trainer.train() calls  #
+    # accelerator.prepare() → DDP init → NCCL, we must:                   #
+    #   1. Free all temporary CUDA tensors left by the finder.             #
+    #   2. Barrier-sync all ranks so no rank enters DDP init while another #
+    #      is still freeing memory (avoids race on /dev/shm NCCL buffers). #
+    # ------------------------------------------------------------------ #
+    import gc as _gc
+    _gc.collect()
+    torch.cuda.empty_cache()
+    try:
+        import torch.distributed as _dist
+        if _dist.is_available() and _dist.is_initialized():
+            _dist.barrier()
+            log_info("[Post-LR-Finder] All ranks synced via barrier before DDP init.")
+    except Exception as _be:
+        log_info(f"[Post-LR-Finder] barrier skipped: {_be}")
 
     trainer.tokenizer = tokenizer
     trainer.train()

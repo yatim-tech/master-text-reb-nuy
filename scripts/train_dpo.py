@@ -125,6 +125,14 @@ def make_parser(subparsers: argparse._SubParsersAction = None):
 
 def main():
     """Format of training requests"""
+    # Prevent NCCL from using /dev/shm (shared memory) which can exhaust
+    # the small /dev/shm allocation in container environments.
+    # Must be set before the distributed process group is initialized.
+    import os as _os
+    if not _os.environ.get("NCCL_SHM_DISABLE"):
+        _os.environ["NCCL_SHM_DISABLE"] = "1"
+    if not _os.environ.get("NCCL_P2P_DISABLE"):
+        _os.environ["NCCL_P2P_DISABLE"] = "1"
     parser = make_parser()
     training_args, model_args = parser.parse_args_and_config()
     train_info = json.load(open(training_args.request_path, "r"))
@@ -467,6 +475,20 @@ def main():
             log_info("[LR Finder/DPO] Skipped — DeepSpeed ZeRO mode")
         else:
             log_info("[LR Finder/DPO] Skipped — disabled via run_lr_finder=False")
+
+    # ------------------------------------------------------------------ #
+    # Post-LR-Finder cleanup (same rationale as train_instruct.py)         #
+    # ------------------------------------------------------------------ #
+    import gc as _gc
+    _gc.collect()
+    torch.cuda.empty_cache()
+    try:
+        import torch.distributed as _dist
+        if _dist.is_available() and _dist.is_initialized():
+            _dist.barrier()
+            log_info("[Post-LR-Finder/DPO] All ranks synced via barrier before DDP init.")
+    except Exception as _be:
+        log_info(f"[Post-LR-Finder/DPO] barrier skipped: {_be}")
 
     print("Start training ...", flush=True)
     trainer.train()
