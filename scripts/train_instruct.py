@@ -501,7 +501,7 @@ def main():
     try:
         import torch.distributed as _dist
         if _dist.is_available() and _dist.is_initialized():
-            _dist.barrier()
+            _dist.barrier(device_ids=[LOCAL_RANK])
             log_info("[Post-LR-Finder] All ranks synced via barrier before DDP init.")
     except Exception as _be:
         log_info(f"[Post-LR-Finder] barrier skipped: {_be}")
