@@ -8,7 +8,7 @@ from model_utility import (
     get_gpu_count,
 )
 from copy import deepcopy
-from lrs_lookup import get_grpo_lr, get_grpo_python_lr
+from lrs_lookup import get_grpo_lr, get_grpo_python_lr, get_grpo_ratio
 allow_find_lk_lr = False
 
 GRPO_CONFIG = {
@@ -347,7 +347,18 @@ def get_training_json(train_info: dict) -> dict:
         else:
             print(f"Using lr from config: {run_config['learning_rate']}", flush=True)
 
-    run_config["learning_rate"] *= train_info["reg_ratio"]
+    # Apply reg_ratio only if no custom per-model ratio exists in grpo_ratio.json.
+    # If a ratio is found there, it was already baked into the LR via get_grpo_lr();
+    # applying reg_ratio on top would double-count the adjustment.
+    grpo_ratio = get_grpo_ratio(model_name)
+    if grpo_ratio is not None:
+        print(
+            f"[grpo_config] grpo_ratio.json entry found (ratio={grpo_ratio}) — "
+            f"skipping reg_ratio ({train_info['reg_ratio']}) to avoid double multiplication.",
+            flush=True,
+        )
+    else:
+        run_config["learning_rate"] *= train_info["reg_ratio"]
 
     run_cmd = get_run_cmd(run_config, run_config["gpu_nums"])
 
