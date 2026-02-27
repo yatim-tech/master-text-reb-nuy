@@ -28,6 +28,7 @@ import os
 from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
 from state_manager import get_state, set_state
 from lr_finder_les import find_lr_and_continue
+from config_pair import DPO_CONFIG_RATIO
 
 # from packing.packed_dataset import PackedDataset
 from transformers import (
@@ -416,8 +417,8 @@ def main():
                 ),
             )
 
-            min_lr = training_args.learning_rate * 0.5
-            max_lr = training_args.learning_rate * 2.0
+            min_lr = training_args.learning_rate * DPO_CONFIG_RATIO["min_lr_rate"]
+            max_lr = training_args.learning_rate * DPO_CONFIG_RATIO["max_lr_rate"]
             use_lora = (peft_config is not None)
 
             effective_lr, _, _, num_evals = find_lr_and_continue(

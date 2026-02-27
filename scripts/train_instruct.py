@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from transformers import Trainer
 from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
 from lr_finder_les import find_lr_and_continue
+from config_pair import INSTRUCT_CONFIG_RATIO
 
 # from packing.packed_dataset import PackedDataset
 from transformers import (
@@ -418,8 +419,8 @@ def main():
         )
         # Use a wider sweep range: 10× below to 10× above the config LR.
         # The finder will stop early if loss diverges before reaching end_lr.
-        min_lr = training_args.learning_rate * 0.5
-        max_lr = training_args.learning_rate * 2.0
+        min_lr = training_args.learning_rate * INSTRUCT_CONFIG_RATIO["min_lr_rate"]
+        max_lr = training_args.learning_rate * INSTRUCT_CONFIG_RATIO["max_lr_rate"]
 
         try:
             effective_lr, best_state_dict, _, num_evals = find_lr_and_continue(

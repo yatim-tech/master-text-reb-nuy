@@ -49,6 +49,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import yaml
 from tokenize_grpo import get_dataset
 from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
+from config_pair import GRPO_CONFIG_RATIO
 
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", "0"))
 GRPO_DEFAULT_NUM_GENERATIONS = 2
@@ -483,8 +484,8 @@ def main():
             f"(config LR: {training_args.learning_rate:.2e})"
         )
 
-        _start_lr = training_args.learning_rate * 0.25
-        _end_lr   = training_args.learning_rate * 4.0
+        _start_lr = training_args.learning_rate * GRPO_CONFIG_RATIO["min_lr_rate"]
+        _end_lr   = training_args.learning_rate * GRPO_CONFIG_RATIO["max_lr_rate"]
 
         found_lr = find_grpo_lr(
             model=model,
