@@ -50,6 +50,7 @@ from transformers.modeling_utils import is_deepspeed_zero3_enabled
 
 
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", "0"))
+torch.cuda.set_device(LOCAL_RANK)
 
 
 @dataclass

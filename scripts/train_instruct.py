@@ -30,6 +30,7 @@ import yaml
 from state_manager import get_state, set_state
 
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", "0"))
+torch.cuda.set_device(LOCAL_RANK)
 
 
 @dataclass
