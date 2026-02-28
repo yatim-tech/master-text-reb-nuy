@@ -404,10 +404,11 @@ def main():
     run_lr_finder = train_request.get("run_lr_finder", True)
     distributed_type = train_request.get("distributed", "ddp")
     use_deepspeed = (distributed_type == "ds")
-    # Only run LR finder on the very first training pass (initial / first_time).
-    # On subsequent lr_utils-driven runs (checking_mode=second_time/none)
-    # the LR is already set by text_trainer.py — no need to re-search.
-    is_initial_run = train_request.get("checking_mode", "first_time") in ("first_time", "none", "")
+    # Only run LR finder on the very first training pass (checking_mode="first_time").
+    # On subsequent lr_utils-driven runs (checking_mode="second_time") and the final
+    # full run (checking_mode="none"), the LR is already determined by text_trainer.py
+    # via lr_utils — no need to re-search.
+    is_initial_run = train_request.get("checking_mode", "first_time") == "first_time"
     run_lr_finder = run_lr_finder and is_initial_run
 
     if run_lr_finder and not use_deepspeed:
