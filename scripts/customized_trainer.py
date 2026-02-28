@@ -84,7 +84,7 @@ class CustomEvalSaveCallback(TrainerCallback):
             preparation_time = (start_train_time_obj - start_time_obj).total_seconds()
             log_content += f"\nPreparation time: {preparation_time}"
             time_so_far = (now - start_time_obj).total_seconds()
-            log_content += f"\nTime so far: {time_so_far}"
+            log_content += f"\nTime so far (raw, includes LR finder): {time_so_far}"
             time_for_one_step = (now - start_train_time_obj).total_seconds() / self.checking_step
             log_content += f"\nTime for one step: {time_for_one_step}"
             # Now estimate the total training time for this training
@@ -96,11 +96,18 @@ class CustomEvalSaveCallback(TrainerCallback):
             total_remaining_time = (end_time_obj - now).total_seconds()
             log_content += f"\nTotal remaining time: {total_remaining_time}"
             
-            # n * time_so_far + (time_so_far + total_remaining_training_time) = total_remaining_time
-            # time_so_far + total_remaining_training_time is the time it takes to finish the training (need to estimate the eval time and save time, assuming this is 15 minutes)
-            # assuming time_so_far is + 5 minutes, just in case the checking step takes more time than expected
+            # LR Finder ran before training and consumed ~10 min; use 13 min as safety margin.
+            # We exclude that cost so the formula treats each exploration run as pure training time,
+            # giving a more accurate estimate of how many LR-exploration runs we can afford.
+            lr_finder_overhead_seconds = 13 * 60  # 13 minutes safety margin
+            time_so_far_adjusted = max(0.0, time_so_far - lr_finder_overhead_seconds)
+            log_content += f"\nTime so far (adjusted, LR finder excluded): {time_so_far_adjusted}"
+
+            # n * time_so_far_adjusted + (time_so_far_adjusted + total_remaining_training_time) = total_remaining_time
+            # time_so_far_adjusted + total_remaining_training_time is the time needed to finish 1 full training run
+            # 12 min buffer for eval + save at the end; 3 min buffer for run-time variance
             max_var_time_sofar = 3 * 60
-            n = (total_remaining_time - (time_so_far + total_remaining_training_time + 12 * 60)) / (time_so_far + max_var_time_sofar) # 300 = 5 minutes, assume that it extra time would be more or less 5 minutes
+            n = (total_remaining_time - (time_so_far_adjusted + total_remaining_training_time + 12 * 60)) / (time_so_far_adjusted + max_var_time_sofar) # exclude LR finder overhead from per-run estimate
             n = int(n)
             my_state["check_details"] = {
                 "now": str(now.strftime("%Y-%m-%d %H:%M:%S")),
@@ -111,6 +118,8 @@ class CustomEvalSaveCallback(TrainerCallback):
                 "estimation_of_steps": n,
                 "preparation_time": preparation_time,
                 "time_so_far": time_so_far,
+                "time_so_far_adjusted": time_so_far_adjusted,
+                "lr_finder_overhead_seconds": lr_finder_overhead_seconds,
                 "time_for_one_step": time_for_one_step,
                 "total_remaining_training_time": total_remaining_training_time,
                 "total_remaining_time": total_remaining_time,
