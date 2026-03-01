@@ -44,6 +44,7 @@ from grpo_config import get_training_json as get_grpo_training_json
 import pathlib
 from transformers import AutoConfig
 import lr_utils
+from config_pair import REG_RATIO
 
 def run_cmd_with_log(cmd: str, log_file_path: str, env_vars: dict = None):
     # print(f"Running command: {cmd}", flush=True)
@@ -296,7 +297,7 @@ def main():
     )
 
     parser.add_argument(
-        "--reg-ratio", type=float, help="Reg ratio to use for training", default=1
+        "--reg-ratio", type=float, help="Reg ratio to use for training", default=REG_RATIO
     )
 
     args = parser.parse_args()

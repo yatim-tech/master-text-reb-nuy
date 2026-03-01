@@ -6,6 +6,7 @@ import gc
 import os
 from torch.optim import AdamW
 from dataclasses import dataclass
+from config_pair import RATIO_BOST
 
 logger = logging.getLogger(__name__)
 
@@ -489,7 +490,7 @@ def find_lr_and_continue(
     # ------------------------------------------------------------------ #
     # 7. Apply small boost and ALL-REDUCE across ranks                    #
     # ------------------------------------------------------------------ #
-    final_lr *= 1.15
+    final_lr *= RATIO_BOST
     if is_main_rank:
         logger.info(f"[LR Finder] Applied 15% boost: {final_lr:.2e}")
 
