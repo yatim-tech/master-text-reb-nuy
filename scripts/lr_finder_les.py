@@ -147,8 +147,7 @@ def find_lr_and_continue(
     num_candidates: int = 2,
     preserve_state: bool = True,
     lora: bool = True,
-    use_gradient_checkpointing: bool = True,
-    finder_batch_size: int = None,
+    use_gradient_checkpointing: bool = False,
 ):
     """
     Multi-GPU-safe LR finder based on Leslie Smith's approach.
@@ -184,28 +183,6 @@ def find_lr_and_continue(
 
     rank = LOCAL_RANK
     is_main_rank = (rank == 0)
-
-    # ------------------------------------------------------------------ #
-    # 0. Temporarily halve the batch size for the finder sweep             #
-    #    so activations + AdamW moment vectors don't OOM.                  #
-    #    The real training batch size is restored at the end of this func. #
-    # ------------------------------------------------------------------ #
-    _original_batch_size = trainer.args.per_device_train_batch_size
-    if finder_batch_size is None:
-        # Only reduce batch size on multi-GPU — NCCL collective ops hold activation
-        # tensors across ranks simultaneously, doubling effective VRAM pressure.
-        # Single-GPU has no such overhead so we keep the original batch size.
-        if WORLD_SIZE > 1:
-            finder_batch_size = max(1, _original_batch_size // 2)
-        else:
-            finder_batch_size = _original_batch_size
-    if finder_batch_size != _original_batch_size:
-        trainer.args.per_device_train_batch_size = finder_batch_size
-        if is_main_rank:
-            logger.info(
-                f"[LR Finder] Using finder_batch_size={finder_batch_size} "
-                f"(real batch_size={_original_batch_size}, world_size={WORLD_SIZE})"
-            )
 
     # Enable gradient checkpointing to reduce activation memory during sweep
     if use_gradient_checkpointing:
@@ -540,15 +517,6 @@ def find_lr_and_continue(
     del initial_state
     torch.cuda.empty_cache()
     gc.collect()
-
-    # ------------------------------------------------------------------ #
-    # 9. Restore the real training batch size                              #
-    # ------------------------------------------------------------------ #
-    trainer.args.per_device_train_batch_size = _original_batch_size
-    if is_main_rank:
-        logger.info(
-            f"[LR Finder] Restored per_device_train_batch_size={_original_batch_size}"
-        )
 
     if is_main_rank:
         logger.info(f"[LR Finder] Done. Selected LR = {final_lr:.2e}")

@@ -29,6 +29,22 @@ def split_dataset(total_data_path: str, train_data_path: str, dev_data_path: str
     
     random.seed(seed)
     random.shuffle(data)
+
+    # Lightweight quality filtering: drop empty prompts + exact duplicates.
+    filtered = []
+    seen = set()
+    for item in data:
+        prompt = item.get("prompt") or item.get("instruction") or item.get("instruct") or item.get("input")
+        if prompt is None:
+            continue
+        if isinstance(prompt, str) and len(prompt.strip()) == 0:
+            continue
+        k = json.dumps(item, sort_keys=True, ensure_ascii=False)
+        if k in seen:
+            continue
+        seen.add(k)
+        filtered.append(item)
+    data = filtered
     
     # Split the dataset into train and dev
     dev_items = data[:dev_size]
@@ -80,7 +96,19 @@ def main(training_request_path: str):
     task_id = training_request["train_request"]["task_id"]
     train_path = os.path.join("datasets", f"grpo_train_{task_id}.json")
     dev_path = os.path.join("datasets", f"grpo_dev_{task_id}.json")
-    split_dataset(total_path, train_path, dev_path)
+
+    # Adaptive dev split for short jobs
+    hours_to_complete = float(training_request["train_request"].get("hours_to_complete", 0) or 0)
+    dev_size = int(training_request["train_request"].get("dev_size", 0) or 0)
+    if dev_size <= 0:
+        if hours_to_complete > 0 and hours_to_complete <= 0.5:
+            dev_size = 50
+        elif hours_to_complete > 0 and hours_to_complete <= 1.0:
+            dev_size = 100
+        else:
+            dev_size = 200
+
+    split_dataset(total_path, train_path, dev_path, dev_size=dev_size)
     t2 = datetime.now()
     print(f"Tokenization completed in {(t2 - t1).seconds} seconds")
 

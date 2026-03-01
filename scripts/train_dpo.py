@@ -156,7 +156,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(train_request["model_path"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
+    tokenizer.padding_side = "left"
     # max_length = get_max_length_config()
     # if "max_length" in train_request:
     #     max_length = train_request["max_length"]

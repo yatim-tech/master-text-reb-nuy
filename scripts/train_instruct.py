@@ -212,6 +212,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(train_request["model_path"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    tokenizer.padding_side = "left" 
     
     # wandb_init_success = init_wandb(train_request)
     # if not wandb_init_success:
