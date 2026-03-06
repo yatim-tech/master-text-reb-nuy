@@ -235,10 +235,7 @@ def get_training_json(train_info: dict) -> dict:
     train_request["adjust_batch_size"] = False
     train_request["periodic_save_steps"] = 500
     train_request["checking_step"] = 80
-    # Pass distributed type and LR finder flag
-    train_request["distributed"] = run_config.get("distributed", "ddp")
-    train_request["run_lr_finder"] = run_config.get("distributed", "ddp") != "ds"
-
+    
     return {
         "train_request": train_request,
         "run_cmd": run_cmd

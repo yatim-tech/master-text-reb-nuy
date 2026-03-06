@@ -291,10 +291,4 @@ def get_training_json(train_info: dict) -> dict:
             int(train_info["hours_to_complete"] * 70), train_request["min_steps"]
         )
 
-    # Pass distributed type and LR finder flag to train_request so
-    # train_instruct.py can decide whether to run the finder.
-    train_request["distributed"] = run_config.get("distributed", "ddp")
-    # Disable LR finder for DeepSpeed (ZeRO incompatible with manual param ops)
-    train_request["run_lr_finder"] = run_config.get("distributed", "ddp") != "ds"
-
     return {"train_request": train_request, "run_cmd": run_cmd}

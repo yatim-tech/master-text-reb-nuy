@@ -11,8 +11,6 @@ from transformers.trainer_utils import is_main_process
 from dataclasses import dataclass, field
 from transformers import Trainer
 from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
-from lr_finder_les import find_lr_and_continue
-from config_pair import INSTRUCT_CONFIG_RATIO
 
 # from packing.packed_dataset import PackedDataset
 from transformers import (
@@ -31,7 +29,6 @@ import yaml
 from state_manager import get_state, set_state
 
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", "0"))
-torch.cuda.set_device(LOCAL_RANK)
 
 
 @dataclass
@@ -194,14 +191,6 @@ def get_max_length_config():
 
 def main():
     """Format of training requests"""
-    # Prevent NCCL from using /dev/shm (shared memory) which can exhaust
-    # the small /dev/shm allocation in container environments. Use
-    # network-based transport instead. Must be set before dist is init'd.
-    import os as _os
-    if not _os.environ.get("NCCL_SHM_DISABLE"):
-        _os.environ["NCCL_SHM_DISABLE"] = "1"
-    if not _os.environ.get("NCCL_P2P_DISABLE"):
-        _os.environ["NCCL_P2P_DISABLE"] = "1"
     argument_parser = transformers.HfArgumentParser((TrainingArguments, LoraArguments))
     (training_args, lora_args) = argument_parser.parse_args_into_dataclasses()
     train_info = json.load(open(training_args.request_path, "r"))
@@ -212,8 +201,6 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(train_request["model_path"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
-    tokenizer.padding_side = "left" 
     
     # wandb_init_success = init_wandb(train_request)
     # if not wandb_init_success:
@@ -388,7 +375,7 @@ def main():
                 train_request["submission_dir"],
                 training_args.output_dir,
                 train_request["model_name"],
-                max_steps,
+                max_steps, 
                 checking_step=checking_step,
                 total_steps_all_epochs=total_steps_all_epochs,
                 end_time=train_request["end_time"],
@@ -397,120 +384,9 @@ def main():
         ],
     )
 
-    # ------------------------------------------------------------------ #
-    # LR Finder (Leslie Smith Range Test)                                  #
-    # Strategy: all GPU ranks run finder in parallel on their data shard,  #
-    # then all-reduce the result — no idle ranks, no broadcast overhead.   #
-    # Skip only when using DeepSpeed (incompatible with param manipulation).#
-    # ------------------------------------------------------------------ #
-    run_lr_finder = train_request.get("run_lr_finder", True)
-    distributed_type = train_request.get("distributed", "ddp")
-    use_deepspeed = (distributed_type == "ds")
-    # Only run LR finder on the very first training pass (checking_mode="first_time").
-    # On subsequent lr_utils-driven runs (checking_mode="second_time") and the final
-    # full run (checking_mode="none"), the LR is already determined by text_trainer.py
-    # via lr_utils — no need to re-search.
-    is_initial_run = train_request.get("checking_mode", "first_time") == "first_time"
-    run_lr_finder = run_lr_finder and is_initial_run
-
-    if run_lr_finder and not use_deepspeed:
-        # Fix 5: Flush cache before finder to reclaim any fragmented allocations
-        import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
-        log_info(
-            f"[LR Finder] Running on {training_args.world_size} GPU(s) in parallel. "
-            f"Current LR from config: {training_args.learning_rate:.2e}"
-        )
-        # Use a wider sweep range: 10× below to 10× above the config LR.
-        # The finder will stop early if loss diverges before reaching end_lr.
-        min_lr = training_args.learning_rate * INSTRUCT_CONFIG_RATIO["min_lr_rate"]
-        max_lr = training_args.learning_rate * INSTRUCT_CONFIG_RATIO["max_lr_rate"]
-
-        try:
-            effective_lr, best_state_dict, _, num_evals = find_lr_and_continue(
-                trainer=trainer,
-                start_lr=min_lr,
-                end_lr=max_lr,
-                time_budget_minutes=10.0,
-                preserve_state=True,
-                lora=training_args.use_lora,
-                # Fix 6: propagate gradient checkpointing into finder
-                use_gradient_checkpointing=training_args.gradient_checkpointing,
-            )
-            log_info(f"[LR Finder] Selected LR: {effective_lr:.2e} (after {num_evals} evals)")
-        except torch.cuda.OutOfMemoryError:
-            # OOM during finder — retry with batch_size=1
-            log_info("[LR Finder] OOM — retrying with per_device_train_batch_size=1")
-            from copy import deepcopy
-            lr_finder_args = deepcopy(training_args)
-            lr_finder_args.per_device_train_batch_size = 1
-            lr_finder_trainer = Trainer(
-                model=model,
-                tokenizer=tokenizer,
-                args=lr_finder_args,
-                train_dataset=train_ds,
-                eval_dataset=dev_ds,
-            )
-            try:
-                effective_lr, best_state_dict, _, num_evals = find_lr_and_continue(
-                    trainer=lr_finder_trainer,
-                    start_lr=min_lr,
-                    end_lr=max_lr,
-                    time_budget_minutes=10.0,
-                    preserve_state=True,
-                    lora=training_args.use_lora,
-                    # Fix 7: always use gradient checkpointing on OOM retry
-                    use_gradient_checkpointing=True,
-                )
-                log_info(f"[LR Finder] (retry) Selected LR: {effective_lr:.2e}")
-            except Exception as e2:
-                log_info(f"[LR Finder] Retry also failed: {e2} — using config LR")
-                effective_lr = training_args.learning_rate
-            del lr_finder_trainer, lr_finder_args
-        except Exception as e:
-            log_info(f"[LR Finder] Failed: {e} — using config LR")
-            effective_lr = training_args.learning_rate
-
-        training_args.learning_rate = effective_lr
-        log_info(f"[LR Finder] Final LR set for training: {effective_lr:.2e}")
-        # Persist the found LR into shared state so text_trainer.py can use
-        # it (instead of the config LR) as the base for lr_utils on subsequent runs.
-        try:
-            _state = get_state()
-            if "train" not in _state:
-                _state["train"] = {}
-            _state["train"]["found_lr"] = effective_lr
-            if is_main_process(LOCAL_RANK):
-                set_state(_state)
-        except Exception as _se:
-            log_info(f"[LR Finder] Could not persist found_lr to state: {_se}")
-    else:
-        if not is_initial_run:
-            log_info("[LR Finder] Skipped — non-initial run (lr_utils controls LR now)")
-        elif use_deepspeed:
-            log_info("[LR Finder] Skipped — DeepSpeed mode (ZeRO incompatible with param manipulation)")
-        else:
-            log_info("[LR Finder] Skipped — disabled via run_lr_finder=False")
-
-    # ------------------------------------------------------------------ #
-    # Post-LR-Finder cleanup                                               #
-    # The finder ran the model outside DDP. Before trainer.train() calls  #
-    # accelerator.prepare() → DDP init → NCCL, we must:                   #
-    #   1. Free all temporary CUDA tensors left by the finder.             #
-    #   2. Barrier-sync all ranks so no rank enters DDP init while another #
-    #      is still freeing memory (avoids race on /dev/shm NCCL buffers). #
-    # ------------------------------------------------------------------ #
-    import gc as _gc
-    _gc.collect()
-    torch.cuda.empty_cache()
-    try:
-        import torch.distributed as _dist
-        if _dist.is_available() and _dist.is_initialized():
-            _dist.barrier(device_ids=[LOCAL_RANK])
-            log_info("[Post-LR-Finder] All ranks synced via barrier before DDP init.")
-    except Exception as _be:
-        log_info(f"[Post-LR-Finder] barrier skipped: {_be}")
-
     trainer.tokenizer = tokenizer
+    # last_checkpoint = get_last_checkpoint(training_args.output_dir)
+    # log_info(f"last_checkpoint: {last_checkpoint}")
     trainer.train()
     
     if is_main_process(LOCAL_RANK):

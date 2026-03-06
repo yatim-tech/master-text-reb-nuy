@@ -11,7 +11,7 @@ import transformers
 import torch
 from transformers.trainer_utils import is_main_process
 from dataclasses import dataclass, field
-from transformers import Trainer, TrainingArguments as HFTrainingArguments
+from transformers import Trainer
 from trl import DPOTrainer, DPOConfig, ModelConfig, ScriptArguments, TrlParser
 from trl import get_kbit_device_map, get_peft_config, get_quantization_config
 from peft import (
@@ -27,8 +27,6 @@ import argparse
 import os
 from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
 from state_manager import get_state, set_state
-from lr_finder_les import find_lr_and_continue
-from config_pair import DPO_CONFIG_RATIO
 
 # from packing.packed_dataset import PackedDataset
 from transformers import (
@@ -51,7 +49,6 @@ from transformers.modeling_utils import is_deepspeed_zero3_enabled
 
 
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", "0"))
-torch.cuda.set_device(LOCAL_RANK)
 
 
 @dataclass
@@ -126,14 +123,6 @@ def make_parser(subparsers: argparse._SubParsersAction = None):
 
 def main():
     """Format of training requests"""
-    # Prevent NCCL from using /dev/shm (shared memory) which can exhaust
-    # the small /dev/shm allocation in container environments.
-    # Must be set before the distributed process group is initialized.
-    import os as _os
-    if not _os.environ.get("NCCL_SHM_DISABLE"):
-        _os.environ["NCCL_SHM_DISABLE"] = "1"
-    if not _os.environ.get("NCCL_P2P_DISABLE"):
-        _os.environ["NCCL_P2P_DISABLE"] = "1"
     parser = make_parser()
     training_args, model_args = parser.parse_args_and_config()
     train_info = json.load(open(training_args.request_path, "r"))
@@ -156,7 +145,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(train_request["model_path"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
+
     # max_length = get_max_length_config()
     # if "max_length" in train_request:
     #     max_length = train_request["max_length"]
@@ -324,175 +313,9 @@ def main():
             )
         ],
     )
-
-    # ------------------------------------------------------------------ #
-    # LR Finder for DPO — SFT-proxy strategy                              #
-    # DPOTrainer.compute_loss() needs ref_model logprobs which are        #
-    # expensive to compute in a finder loop. Instead we use a lightweight  #
-    # HF Trainer with the same model but only the 'chosen' column as a    #
-    # standard SFT objective. This gives us a valid LR range signal.      #
-    # All-ranks-parallel strategy (same as instruct), safe for DDP.       #
-    # ------------------------------------------------------------------ #
-    run_lr_finder = train_request.get("run_lr_finder", True)
-    distributed_type = train_request.get("distributed", "ddp")
-    use_deepspeed = (distributed_type == "ds")
-    # Only run LR finder on the very first training pass (checking_mode="first_time").
-    # On subsequent lr_utils-driven runs (checking_mode="second_time") and the final
-    # full run (checking_mode="none"), the LR is already determined by text_trainer.py
-    # via lr_utils — no need to re-search.
-    is_initial_run = train_request.get("checking_mode", "first_time") == "first_time"
-    run_lr_finder = run_lr_finder and is_initial_run
-
-    if run_lr_finder and not use_deepspeed:
-        # Flush cache before finder to reclaim fragmented allocations
-        import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
-        log_info(
-            f"[LR Finder/DPO] Running SFT-proxy finder on {training_args.world_size} GPU(s). "
-            f"Config LR: {training_args.learning_rate:.2e}"
-        )
-        try:
-            from copy import deepcopy
-            from torch.utils.data import Dataset as TorchDataset
-
-            # Build minimal SFT dataset from 'chosen' column ----------------
-            class _ChosenSFTDataset(TorchDataset):
-                """Wraps DPO dataset exposing only the 'chosen' tokens."""
-                def __init__(self, dpo_ds):
-                    # DPOTrainer stores chosen as input_ids after collation;
-                    # raw dataset keeps them as strings. We just pass them
-                    # through to the tokenizer via a dummy Trainer.
-                    self._ds = dpo_ds
-
-                def __len__(self):
-                    return len(self._ds)
-
-                def __getitem__(self, idx):
-                    row = self._ds[idx]
-                    # DPO dataset contains 'chosen_input_ids' after processing
-                    # or 'chosen' as raw text. Use whichever is available.
-                    if "chosen_input_ids" in row:
-                        return {
-                            "input_ids": row["chosen_input_ids"],
-                            "attention_mask": row.get("chosen_attention_mask",
-                                                      [1] * len(row["chosen_input_ids"])),
-                            "labels": row["chosen_input_ids"],
-                        }
-                    else:
-                        # Tokenize on-the-fly
-                        enc = tokenizer(
-                            row.get("chosen", ""),
-                            truncation=True,
-                            max_length=training_args.max_length or 1024,
-                        )
-                        return {
-                            "input_ids": enc["input_ids"],
-                            "attention_mask": enc["attention_mask"],
-                            "labels": enc["input_ids"],
-                        }
-
-            sft_train_ds = _ChosenSFTDataset(train_ds)
-            sft_dev_ds = _ChosenSFTDataset(dev_ds)
-
-            # Minimal HF TrainingArguments for the proxy finder --------------
-            from transformers import DataCollatorForSeq2Seq
-            lr_finder_hf_args = HFTrainingArguments(
-                output_dir="/tmp/_lr_finder_dpo",
-                per_device_train_batch_size=training_args.per_device_train_batch_size,
-                gradient_checkpointing=training_args.gradient_checkpointing,
-                bf16=training_args.bf16,
-                fp16=training_args.fp16,
-                no_cuda=False,
-                report_to="none",
-            )
-            lr_finder_trainer = Trainer(
-                model=model,
-                tokenizer=tokenizer,
-                args=lr_finder_hf_args,
-                train_dataset=sft_train_ds,
-                eval_dataset=sft_dev_ds,
-                data_collator=DataCollatorForSeq2Seq(
-                    tokenizer,
-                    pad_to_multiple_of=8,
-                    return_tensors="pt",
-                    padding=True,
-                ),
-            )
-
-            min_lr = training_args.learning_rate * DPO_CONFIG_RATIO["min_lr_rate"]
-            max_lr = training_args.learning_rate * DPO_CONFIG_RATIO["max_lr_rate"]
-            use_lora = (peft_config is not None)
-
-            effective_lr, _, _, num_evals = find_lr_and_continue(
-                trainer=lr_finder_trainer,
-                start_lr=min_lr,
-                end_lr=max_lr,
-                time_budget_minutes=10.0,
-                preserve_state=True,
-                lora=use_lora,
-                # propagate gradient checkpointing into finder
-                use_gradient_checkpointing=training_args.gradient_checkpointing,
-            )
-            log_info(f"[LR Finder/DPO] Selected LR: {effective_lr:.2e} ({num_evals} evals)")
-            del lr_finder_trainer, lr_finder_hf_args
-            del sft_train_ds, sft_dev_ds
-            torch.cuda.empty_cache()
-        except torch.cuda.OutOfMemoryError:
-            log_info("[LR Finder/DPO] OOM — retrying with batch_size=1")
-            try:
-                lr_finder_hf_args.per_device_train_batch_size = 1
-                lr_finder_trainer = Trainer(
-                    model=model, tokenizer=tokenizer, args=lr_finder_hf_args,
-                    train_dataset=sft_train_ds, eval_dataset=sft_dev_ds,
-                )
-                effective_lr, _, _, _ = find_lr_and_continue(
-                    trainer=lr_finder_trainer, start_lr=min_lr, end_lr=max_lr,
-                    time_budget_minutes=10.0, preserve_state=True, lora=use_lora,
-                    # always enable gradient checkpointing on OOM retry
-                    use_gradient_checkpointing=True,
-                )
-            except Exception as e2:
-                log_info(f"[LR Finder/DPO] Retry failed: {e2} — using config LR")
-                effective_lr = training_args.learning_rate
-        except Exception as e:
-            log_info(f"[LR Finder/DPO] Failed: {e} — using config LR")
-            effective_lr = training_args.learning_rate
-
-        training_args.learning_rate = effective_lr
-        log_info(f"[LR Finder/DPO] Final LR set for training: {effective_lr:.2e}")
-        # Persist the found LR into shared state so text_trainer.py can use
-        # it as the base for lr_utils on subsequent runs.
-        try:
-            _state = get_state()
-            if "train" not in _state:
-                _state["train"] = {}
-            _state["train"]["found_lr"] = effective_lr
-            if is_main_process(LOCAL_RANK):
-                set_state(_state)
-        except Exception as _se:
-            log_info(f"[LR Finder/DPO] Could not persist found_lr to state: {_se}")
-    else:
-        if not is_initial_run:
-            log_info("[LR Finder/DPO] Skipped — non-initial run (lr_utils controls LR now)")
-        elif use_deepspeed:
-            log_info("[LR Finder/DPO] Skipped — DeepSpeed ZeRO mode")
-        else:
-            log_info("[LR Finder/DPO] Skipped — disabled via run_lr_finder=False")
-
-    # ------------------------------------------------------------------ #
-    # Post-LR-Finder cleanup (same rationale as train_instruct.py)         #
-    # ------------------------------------------------------------------ #
-    import gc as _gc
-    _gc.collect()
-    torch.cuda.empty_cache()
-    try:
-        import torch.distributed as _dist
-        if _dist.is_available() and _dist.is_initialized():
-            _dist.barrier(device_ids=[LOCAL_RANK])
-            log_info("[Post-LR-Finder/DPO] All ranks synced via barrier before DDP init.")
-    except Exception as _be:
-        log_info(f"[Post-LR-Finder/DPO] barrier skipped: {_be}")
-
-    print("Start training ...", flush=True)
+    
+    print("Start training ...", flush=True)       
+    # trainer.train()
     trainer.train()
     
     if is_main_process(LOCAL_RANK):

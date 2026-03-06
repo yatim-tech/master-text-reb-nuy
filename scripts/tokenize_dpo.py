@@ -157,25 +157,7 @@ def main(training_request_path: str):
     
     model_name = training_request["train_request"]["model_name"]
     
-    # Adaptive dev split for short jobs
-    hours_to_complete = float(training_request["train_request"].get("hours_to_complete", 0) or 0)
-    dev_size = int(training_request["train_request"].get("dev_size", 0) or 0)
-    if dev_size <= 0:
-        if hours_to_complete > 0 and hours_to_complete <= 0.5:
-            dev_size = 50
-        elif hours_to_complete > 0 and hours_to_complete <= 1.0:
-            dev_size = 100
-        else:
-            dev_size = 200
-
-    split_dataset(
-        total_path,
-        train_path,
-        dev_path,
-        dev_size=dev_size,
-        max_data_size=max_data_size,
-        model=model_name,
-    )
+    split_dataset(total_path, train_path, dev_path, max_data_size=max_data_size, model=model_name)
     t2 = datetime.now()
     print(f"Tokenization completed in {(t2 - t1).seconds} seconds")
 

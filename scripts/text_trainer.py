@@ -44,7 +44,6 @@ from grpo_config import get_training_json as get_grpo_training_json
 import pathlib
 from transformers import AutoConfig
 import lr_utils
-from config_pair import REG_RATIO
 
 def run_cmd_with_log(cmd: str, log_file_path: str, env_vars: dict = None):
     # print(f"Running command: {cmd}", flush=True)
@@ -297,7 +296,7 @@ def main():
     )
 
     parser.add_argument(
-        "--reg-ratio", type=float, help="Reg ratio to use for training", default=REG_RATIO
+        "--reg-ratio", type=float, help="Reg ratio to use for training", default=0.9861
     )
 
     args = parser.parse_args()
@@ -431,15 +430,8 @@ def main():
                 c_train_info["train_request"]["checking_mode"] = "second_time"
                 n_runs = state["next_runs"]
                 if "lrs" not in state: # first time of continue
-                    # Prefer the LR found by lr_finder_les over the raw config LR.
-                    # train_instruct.py / train_dpo.py write "found_lr" into state
-                    # after a successful LR finder run.  Fall back to the cmd LR
-                    # if the finder was skipped or failed.
-                    found_lr = state["train"].get("found_lr")
-                    current_lr = float(found_lr if found_lr is not None else state["train"]["lr"])
-                    print(f"[text_trainer] lr_utils base LR: {current_lr:.4e} "
-                          f"({'from LR finder' if found_lr is not None else 'from config'})", flush=True)
-                    state["lrs"] = lr_utils.smart_extend_learning_rates(current_lr, n_runs, log_range=get_log_scale(args.task_type))
+                    current_lr = float(state["train"]["lr"])
+                    state["lrs"] = lr_utils.extend_learning_rates(current_lr, n_runs, log_range=get_log_scale(args.task_type))
                     assert len(state["lrs"]) == n_runs, f"Number of learning rates {state['lrs']} should be equal to number of runs {n_runs}"
                     state["runs"] = []
                 
