@@ -24,7 +24,7 @@ INSTRUCT_CONFIG = {
         "lr": 0.0001,
         "distributed": "ddp",
         "gpu_count": 1,
-        "batch_size": 140,
+        "batch_size": 145,
         "use_lora": False,
     },
     "1_2_b": {
@@ -32,39 +32,39 @@ INSTRUCT_CONFIG = {
         "distributed": "ddp",
         "gpu_count": 1,
         "use_lora": False,
-        "batch_size": 100,
+        "batch_size": 110,
     },
     "2_4_b": {
         "lr": 7.5e-5,
         "distributed": "ddp",
         "gpu_count": 1,
-        "batch_size": 48,
+        "batch_size": 53,
     },
     "4_5_b": {
         "lr": 7e-5,
         "distributed": "ddp",
         "gpu_count": 2,
-        "batch_size": 40,
+        "batch_size": 45,
     },
     "5_9_b": {
         "lr": 3.5e-5,
         "distributed": "ddp",
         "gpu_count": 2,
-        "batch_size": 28,
+        "batch_size": 31,
     },
     "9_12_b": {
         "lr": 1e-4,
         "distributed": "ddp",
         "gpu_count": 2,
         "use_lora": True,
-        "batch_size": 32,
+        "batch_size": 35,
     },
     "12_15_b": {
         "lr": 1e-4,
         "distributed": "ds",
         "gpu_count": 4,
         "use_lora": True,
-        "batch_size": 30,
+        "batch_size": 35,
     },
     "15_40_b": {
         "lr": 8e-5,
@@ -198,7 +198,7 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": 3,
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.25,
+        "min_lr_rate": 0.1,
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
         "use_lora": config.get("use_lora", False),
@@ -274,6 +274,13 @@ def get_training_json(train_info: dict) -> dict:
             print(f"Using lr from config: {run_config['learning_rate']}", flush=True)
 
     run_config["learning_rate"] *= train_info["reg_ratio"]
+
+    import os
+    if os.environ.get("AUTOTUNE_LR"):
+        run_config["learning_rate"] = float(os.environ.get("AUTOTUNE_LR"))
+    if os.environ.get("AUTOTUNE_BATCH_SIZE"):
+        run_config["batch_size"] = int(os.environ.get("AUTOTUNE_BATCH_SIZE"))
+
     run_cmd = get_run_cmd(run_config, run_config["gpu_nums"])
     train_request = deepcopy(train_info)
     train_request["save_before_remaining_time"] = 3

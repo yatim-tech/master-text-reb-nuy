@@ -60,13 +60,18 @@ class DockerEnvironment:
     dataset_filename: str
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        env_dict = {
             "HUGGINGFACE_TOKEN": self.huggingface_token,
             "WANDB_TOKEN": self.wandb_token,
             "JOB_ID": self.job_id,
             "DATASET_TYPE": self.dataset_type,
             "DATASET_FILENAME": self.dataset_filename,
         }
+        import os
+        for k, v in os.environ.items():
+            if k.startswith("AUTOTUNE_"):
+                env_dict[k] = v
+        return env_dict
 
 
 def _load_and_modify_config(

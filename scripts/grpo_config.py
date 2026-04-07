@@ -16,21 +16,21 @@ GRPO_CONFIG = {
         "lr": 8e-6,
         "distributed": "ddp",
         "gpu_count": 1,
-        "batch_size": 40,
+        "batch_size": 42,
         "vllm_gpu_memory_utilization": 0.4,
     },
     "1_2_b": {
         "lr": 8e-6,
         "distributed": "ddp",
         "gpu_count": 1,
-        "batch_size": 40,
+        "batch_size": 42,
         "vllm_gpu_memory_utilization": 0.4,
     },
     "2_4_b": {
         "lr": 8e-6,
         "distributed": "ddp",
         "gpu_count": 2,
-        "batch_size": 42,
+        "batch_size": 44,
         "vllm_gpu_memory_utilization": 0.35,
         "use_lora": True,
     },
@@ -38,7 +38,7 @@ GRPO_CONFIG = {
         "lr": 6e-6,
         "distributed": "ddp",
         "gpu_count": 2,
-        "batch_size": 42,
+        "batch_size": 44,
         "use_lora": True,
         "vllm_gpu_memory_utilization": 0.4,
     },
@@ -46,7 +46,7 @@ GRPO_CONFIG = {
         "lr": 6e-6,
         "distributed": "ddp",
         "gpu_count": 2,
-        "batch_size": 42,
+        "batch_size": 44,
         "use_lora": True,
         "vllm_gpu_memory_utilization": 0.4,
     },
@@ -54,7 +54,7 @@ GRPO_CONFIG = {
         "lr": 6e-6,
         "distributed": "ddp",
         "gpu_count": 4,
-        "batch_size": 24,
+        "batch_size": 26,
         "use_lora": True,
         "vllm_gpu_memory_utilization": 0.5,
     },
@@ -63,7 +63,7 @@ GRPO_CONFIG = {
         "distributed": "ddp",
         "gpu_count": 4,
         "use_lora": True,
-        "batch_size": 16,
+        "batch_size": 18,
         "vllm_gpu_memory_utilization": 0.6,
     },
     "12_15_b": {
@@ -259,7 +259,7 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": 2,
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.25,
+        "min_lr_rate": 0.15,
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
         "use_lora": config.get("use_lora", False),
@@ -271,7 +271,7 @@ def get_training_json(train_info: dict) -> dict:
         "gradient_checkpointing": get_gradient_checkpointing(model_name),
         "gradient_accumulation_steps": 4,
         "vllm_gpu_memory_utilization": config.get("vllm_gpu_memory_utilization", 0.4),
-        "num_generations": 2,
+        "num_generations": 4,
         "use_vllm": get_use_vllm(model_architecture, model_name),
         "tensor_parallel": config.get("tensor_parallel", False),
         "use_4bit": config.get("use_4bit", False),
@@ -348,6 +348,14 @@ def get_training_json(train_info: dict) -> dict:
             print(f"Using lr from config: {run_config['learning_rate']}", flush=True)
 
     run_config["learning_rate"] *= train_info["reg_ratio"]
+
+    import os
+    if os.environ.get("AUTOTUNE_LR"):
+        run_config["learning_rate"] = float(os.environ.get("AUTOTUNE_LR"))
+    if os.environ.get("AUTOTUNE_BATCH_SIZE"):
+        run_config["batch_size"] = int(os.environ.get("AUTOTUNE_BATCH_SIZE"))
+    if os.environ.get("AUTOTUNE_VLLM_MEM"):
+        run_config["vllm_gpu_memory_utilization"] = float(os.environ.get("AUTOTUNE_VLLM_MEM"))
 
     run_cmd = get_run_cmd(run_config, run_config["gpu_nums"])
 
