@@ -7,33 +7,33 @@ DPO_CONFIG = {
         "lr": 1.35e-5,
         "distributed": "ddp",
         "gpu_count": 1,
-        "batch_size": 20,
+        "batch_size": 16,
     },
     "1_2_b": {
         "lr": 8.7e-6,
         "distributed": "ddp",
         "gpu_count": 1,
-        "batch_size": 16,
+        "batch_size": 12,
     },
     "2_4_b": {
         "lr": 6.5e-6,
         "distributed": "ddp",
         "gpu_count": 2,
-        "batch_size": 16,
+        "batch_size": 12,
         "use_lora": True
     },
     "4_5_b": {
         "lr": 6.25e-6,
         "distributed": "ddp",
         "gpu_count": 4,
-        "batch_size": 16,
+        "batch_size": 12,
         "use_lora": True
     },
     "5_9_b": {
         "lr": 7.5e-6,
         "distributed": "ddp",
         "gpu_count": 4,
-        "batch_size": 12,
+        "batch_size": 8,
         "use_lora": True
     },
     "9_12_b": {
@@ -197,7 +197,7 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": 3,
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.15,
+        "min_lr_rate": 0.25,
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
         "use_lora": config.get("use_lora", False),
