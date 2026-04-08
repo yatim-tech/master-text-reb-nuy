@@ -153,8 +153,10 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps {gradient_accumulation_steps} \
     --eval_accumulation_steps 1 \
-    --eval_strategy no \
-    --save_strategy no \
+    --eval_strategy epoch \
+    --save_strategy epoch \
+    --load_best_model_at_end True \
+    --metric_for_best_model eval_loss \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
     --weight_decay 0. \

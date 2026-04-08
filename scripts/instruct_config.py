@@ -24,7 +24,7 @@ INSTRUCT_CONFIG = {
         "lr": 0.0001,
         "distributed": "ddp",
         "gpu_count": 1,
-        "batch_size": 145,
+        "batch_size": 140,
         "use_lora": False,
     },
     "1_2_b": {
@@ -32,39 +32,39 @@ INSTRUCT_CONFIG = {
         "distributed": "ddp",
         "gpu_count": 1,
         "use_lora": False,
-        "batch_size": 110,
+        "batch_size": 100,
     },
     "2_4_b": {
         "lr": 7.5e-5,
         "distributed": "ddp",
         "gpu_count": 1,
-        "batch_size": 53,
+        "batch_size": 48,
     },
     "4_5_b": {
         "lr": 7e-5,
         "distributed": "ddp",
         "gpu_count": 2,
-        "batch_size": 45,
+        "batch_size": 40,
     },
     "5_9_b": {
         "lr": 3.5e-5,
         "distributed": "ddp",
         "gpu_count": 2,
-        "batch_size": 31,
+        "batch_size": 28,
     },
     "9_12_b": {
         "lr": 1e-4,
         "distributed": "ddp",
         "gpu_count": 2,
         "use_lora": True,
-        "batch_size": 35,
+        "batch_size": 32,
     },
     "12_15_b": {
         "lr": 1e-4,
         "distributed": "ds",
         "gpu_count": 4,
         "use_lora": True,
-        "batch_size": 35,
+        "batch_size": 30,
     },
     "15_40_b": {
         "lr": 8e-5,
@@ -156,8 +156,10 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps {gradient_accumulation_steps} \
     --eval_accumulation_steps 1 \
-    --eval_strategy no \
+    --eval_strategy epoch \
     --save_strategy epoch \
+    --load_best_model_at_end True \
+    --metric_for_best_model eval_loss \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
     --weight_decay 0. \
@@ -198,7 +200,7 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": 3,
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.1,
+        "min_lr_rate": 0.25,
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
         "use_lora": config.get("use_lora", False),
