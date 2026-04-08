@@ -159,8 +159,8 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --metric_for_best_model eval_loss \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
-    --weight_decay 0. \
-    --warmup_steps 35 \
+    --weight_decay 0.01 \
+    --warmup_ratio 0.05 \
     --lr_scheduler_type cosine_with_min_lr \
     --lr_scheduler_kwargs "{\\"min_lr_rate\\": {min_lr_rate}}" \
     --tf32 True \
