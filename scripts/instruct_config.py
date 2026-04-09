@@ -203,6 +203,33 @@ def get_run_cmd(config: dict, gpu_nums: int):
     return template
 
 
+def _get_epoch_num(param_nums: int, hours: float) -> int:
+    """
+    Estimate the number of training epochs that realistically fit within the
+    time budget. epoch_num shapes the cosine LR schedule — setting it too high
+    means the LR decays too slowly within the actual training window;
+    too low means the LR collapses before training time runs out.
+    The time-aware stopping (WhenToEvalHandler) handles actual early exits.
+    """
+    if param_nums < 1_000_000_000:       # <1B: very fast model
+        if hours < 1.5:  return 2
+        if hours < 3:    return 3
+        return 5
+    elif param_nums < 4_000_000_000:     # 1-4B
+        if hours < 2:    return 1
+        if hours < 4:    return 2
+        return 3
+    elif param_nums < 9_000_000_000:     # 4-9B
+        if hours < 3:    return 1
+        if hours < 6:    return 2
+        return 3
+    elif param_nums < 15_000_000_000:    # 9-15B
+        if hours < 4:    return 1
+        return 2
+    else:                                # >15B: likely can't finish even 1 full epoch
+        return 1
+
+
 def get_training_json(train_info: dict) -> dict:
     model_name = train_info["model_name"]
     model_path = train_info["model_path"]
@@ -210,7 +237,7 @@ def get_training_json(train_info: dict) -> dict:
     param_nums = get_model_num_params(model_name, model_path)
     config = get_instruct_config(param_nums)
     run_config = {
-        "epoch_num": 3,
+        "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
         "min_lr_rate": 0.1,  # was 0.25; deeper cosine decay = better final convergence

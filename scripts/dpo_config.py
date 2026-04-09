@@ -216,6 +216,30 @@ def get_run_cmd(config: dict, gpu_nums: int):
     return template
 
 
+def _get_epoch_num(param_nums: int, hours: float) -> int:
+    """
+    DPO is slower than SFT per sample (reference model + chosen/rejected pair),
+    so thresholds are slightly more conservative than Instruct.
+    """
+    if param_nums < 1_000_000_000:       # <1B
+        if hours < 2:    return 2
+        if hours < 4:    return 3
+        return 4
+    elif param_nums < 4_000_000_000:     # 1-4B
+        if hours < 2:    return 1
+        if hours < 5:    return 2
+        return 3
+    elif param_nums < 9_000_000_000:     # 4-9B
+        if hours < 3:    return 1
+        if hours < 7:    return 2
+        return 3
+    elif param_nums < 15_000_000_000:    # 9-15B
+        if hours < 5:    return 1
+        return 2
+    else:                                # >15B
+        return 1
+
+
 def get_training_json(train_info: dict) -> dict:
     model_name = train_info["model_name"]
     model_path = train_info["model_path"]
@@ -223,7 +247,7 @@ def get_training_json(train_info: dict) -> dict:
     param_nums = get_model_num_params(model_name, model_path)
     config = get_config(param_nums)
     run_config = {
-        "epoch_num": 3,
+        "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
         "min_lr_rate": 0.1,  # was 0.25; deeper cosine decay = better final convergence

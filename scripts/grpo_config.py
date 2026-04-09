@@ -276,6 +276,26 @@ def get_run_cmd(config: dict, gpu_nums: int):
     return template
 
 
+def _get_epoch_num(param_nums: int, hours: float) -> int:
+    """
+    GRPO is the slowest task: each step requires generating num_generations
+    samples and computing reward. Thresholds are most conservative here.
+    """
+    if param_nums < 1_000_000_000:       # <1B: fast even with generation
+        if hours < 2:    return 2
+        if hours < 4:    return 3
+        return 4
+    elif param_nums < 4_000_000_000:     # 1-4B
+        if hours < 3:    return 1
+        if hours < 6:    return 2
+        return 3
+    elif param_nums < 9_000_000_000:     # 4-9B
+        if hours < 4:    return 1
+        return 2
+    else:                                # >=9B: generation + large model = very slow
+        return 1
+
+
 def get_training_json(train_info: dict) -> dict:
     model_name = train_info["model_name"]
     model_path = train_info["model_path"]
@@ -284,7 +304,7 @@ def get_training_json(train_info: dict) -> dict:
     config = get_grpo_config(param_nums)
     print(f"config: {config}")
     run_config = {
-        "epoch_num": 2,
+        "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
         "min_lr_rate": 0.1,  # was 0.25; deeper cosine decay = better final convergence
