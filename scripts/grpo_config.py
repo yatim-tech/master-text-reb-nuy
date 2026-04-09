@@ -296,6 +296,22 @@ def _get_epoch_num(param_nums: int, hours: float) -> int:
         return 1
 
 
+def _get_periodic_save_steps(param_nums: int) -> int:
+    """
+    GRPO is slowest: each step = generate num_generations sequences + reward.
+    Fewer steps/hour means larger intervals are still safe.
+    Target: checkpoint every ~15-20 minutes of wall-clock time.
+    """
+    if param_nums < 1_000_000_000:    # <1B with gen: ~400-700 steps/hour
+        return 100
+    elif param_nums < 4_000_000_000:  # 1-4B: ~100-300 steps/hour
+        return 80
+    elif param_nums < 9_000_000_000:  # 4-9B: ~40-100 steps/hour
+        return 50
+    else:                             # >=9B: very slow per step
+        return 50
+
+
 def get_training_json(train_info: dict) -> dict:
     model_name = train_info["model_name"]
     model_path = train_info["model_path"]
@@ -336,7 +352,7 @@ def get_training_json(train_info: dict) -> dict:
     train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["min_steps"] = 100
     train_request["adjust_batch_size"] = False
-    train_request["periodic_save_steps"] = 500
+    train_request["periodic_save_steps"] = _get_periodic_save_steps(param_nums)
 
     if if_contain_slow_reward_function(train_info["dataset_type"]):
         # slow reward needs more buffer; take max so large models still get enough time

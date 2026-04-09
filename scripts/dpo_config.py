@@ -240,6 +240,24 @@ def _get_epoch_num(param_nums: int, hours: float) -> int:
         return 1
 
 
+def _get_periodic_save_steps(param_nums: int) -> int:
+    """
+    DPO is slower per step than Instruct (reference model forward pass),
+    so fewer steps/hour -> can use slightly larger intervals than Instruct.
+    Target: save every ~15-20 minutes.
+    """
+    if param_nums < 1_000_000_000:    # <1B: ~600-900 steps/hour
+        return 150
+    elif param_nums < 4_000_000_000:  # 1-4B: ~200-500 steps/hour
+        return 100
+    elif param_nums < 9_000_000_000:  # 4-9B: ~80-200 steps/hour
+        return 80
+    elif param_nums < 15_000_000_000: # 9-15B: ~30-80 steps/hour
+        return 50
+    else:                             # >15B: very slow
+        return 50
+
+
 def get_training_json(train_info: dict) -> dict:
     model_name = train_info["model_name"]
     model_path = train_info["model_path"]
@@ -298,7 +316,7 @@ def get_training_json(train_info: dict) -> dict:
     train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["min_steps"] = 100
     train_request["adjust_batch_size"] = False
-    train_request["periodic_save_steps"] = 500
+    train_request["periodic_save_steps"] = _get_periodic_save_steps(param_nums)
     train_request["checking_step"] = 80
     
     return {

@@ -230,6 +230,25 @@ def _get_epoch_num(param_nums: int, hours: float) -> int:
         return 1
 
 
+def _get_periodic_save_steps(param_nums: int) -> int:
+    """
+    Target: save every ~15-20 minutes of training.
+    Smaller models run faster (more steps/hour) so need smaller intervals.
+    Larger models are already slow per step, so larger intervals are fine.
+    Instruct baseline (most steps/hour among all task types).
+    """
+    if param_nums < 1_000_000_000:    # <1B: ~800-1200 steps/hour
+        return 200
+    elif param_nums < 4_000_000_000:  # 1-4B: ~300-600 steps/hour
+        return 150
+    elif param_nums < 9_000_000_000:  # 4-9B: ~100-250 steps/hour
+        return 100
+    elif param_nums < 15_000_000_000: # 9-15B: ~40-100 steps/hour
+        return 80
+    else:                             # >15B: very slow, 50 is already fine
+        return 50
+
+
 def get_training_json(train_info: dict) -> dict:
     model_name = train_info["model_name"]
     model_path = train_info["model_path"]
@@ -328,7 +347,7 @@ def get_training_json(train_info: dict) -> dict:
     # Dynamic save buffer: larger models need more time for checkpoint I/O
     train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["adjust_batch_size"] = False
-    train_request["periodic_save_steps"] = 500
+    train_request["periodic_save_steps"] = _get_periodic_save_steps(param_nums)
     train_request["checking_step"] = 70
 
     if param_nums < 1_000_000_000:
