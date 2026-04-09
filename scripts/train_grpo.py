@@ -329,8 +329,9 @@ def main():
 
     # log_info(f"Training request: {train_request}", "start")
     # first download the dataset from the URL, save it as data.json
-    output_dir = training_args.output_dir
-    tokenizer = AutoTokenizer.from_pretrained(train_request["model_path"])
+    task_id = train_request["task_id"]
+
+    tokenizer = AutoTokenizer.from_pretrained(train_request["model_path"], trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -401,7 +402,11 @@ def main():
     else:
         model_class = transformers.AutoModelForCausalLM
 
-    model = model_class.from_pretrained(train_request["model_path"], **model_kwargs)
+    if training_args.use_lora:
+        model = model_class.from_pretrained(train_request["model_path"], trust_remote_code=True, **model_kwargs)
+        model.config.use_cache = False
+    else:
+        model = model_class.from_pretrained(train_request["model_path"], trust_remote_code=True, **model_kwargs)
 
     # some model need to set the generation config or encounter the invalid generation config error
     set_generation_config(train_request["model_name"], model)

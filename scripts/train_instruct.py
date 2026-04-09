@@ -105,6 +105,7 @@ def load_lora_model(training_args: TrainingArguments, model_path: str, lora_args
 
     model = model_class.from_pretrained(
         model_path,
+        trust_remote_code=True,
         attn_implementation="flash_attention_2" if not training_args.disable_fa else "eager",
         torch_dtype=torch.bfloat16,
         quantization_config=(
@@ -174,7 +175,7 @@ def load_model(training_args: TrainingArguments, model_path: str, token_nums: in
     
     model = model_class.from_pretrained(
         model_path,
-        # trust_remote_code=True, remove this because we already filter the model architecture, it will not be used with liger-kernel 
+        trust_remote_code=True,
         torch_dtype=torch.bfloat16,
         attn_implementation=attn_implementation,
     )
@@ -198,7 +199,7 @@ def main():
     # log_info(f"Training request: {train_request}", "start")
     task_id = train_request["task_id"]
 
-    tokenizer = AutoTokenizer.from_pretrained(train_request["model_path"])
+    tokenizer = AutoTokenizer.from_pretrained(train_request["model_path"], trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     

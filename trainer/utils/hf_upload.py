@@ -132,7 +132,10 @@ def main():
     if wandb_token:
         try:
             wandb.login(key=wandb_token)
-            sync_wandb_logs(cache_dir=wandb_logs_path)
+            if wandb_logs_path:
+                sync_wandb_logs(cache_dir=wandb_logs_path)
+            else:
+                print("WANDB_LOGS_PATH not set, skipping W&B log sync.", flush=True)
         except Exception as e:
             print(f"Failed to sync W&B logs: {e}", flush=True)
 

@@ -155,14 +155,17 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --eval_accumulation_steps 1 \
     --eval_strategy epoch \
     --save_strategy epoch \
-    --load_best_model_at_end True \
+    --load_best_model_at_end False \
     --metric_for_best_model eval_loss \
+    --save_only_model True \
+    --save_total_limit 2 \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
     --weight_decay 0.01 \
-    --warmup_ratio 0.05 \
+    --num_train_epochs {num_epochs} \
     --lr_scheduler_type cosine_with_min_lr \
-    --lr_scheduler_kwargs "{\\"min_lr_rate\\": {min_lr_rate}}" \
+    --warmup_ratio 0.05 \
+    --lr_scheduler_kwargs "{\\"min_lr_rate\\": 0.25}" \
     --tf32 True \
     --gradient_checkpointing {gradient_checkpointing} \
     --optim {optimizer} \
