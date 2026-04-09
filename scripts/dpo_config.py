@@ -2,39 +2,49 @@ from model_utility import get_model_architecture, get_model_num_params, get_use_
 from copy import deepcopy
 from lrs_lookup import get_dpo_lr
 
+# beta = KL-divergence penalty. Lower = model explores freely from reference;
+# Higher = stays closer to reference. Tune per model size:
+# Small models (<4B): 0.05 (more exploratory, less prior knowledge to protect)
+# Medium models (4-12B): 0.1  (balanced)
+# Large models (>12B): 0.15-0.2 (conservative, protect learned knowledge)
 DPO_CONFIG = {
     "0_1_b": {
         "lr": 1.35e-5,
         "distributed": "ddp",
         "gpu_count": 1,
         "batch_size": 16,
+        "beta": 0.05,  # small model, allow more deviation from reference
     },
     "1_2_b": {
         "lr": 8.7e-6,
         "distributed": "ddp",
         "gpu_count": 1,
         "batch_size": 12,
+        "beta": 0.05,
     },
     "2_4_b": {
         "lr": 6.5e-6,
         "distributed": "ddp",
         "gpu_count": 2,
         "batch_size": 12,
-        "use_lora": True
+        "use_lora": True,
+        "beta": 0.05,
     },
     "4_5_b": {
         "lr": 6.25e-6,
         "distributed": "ddp",
         "gpu_count": 4,
         "batch_size": 12,
-        "use_lora": True
+        "use_lora": True,
+        "beta": 0.1,  # medium model, balanced
     },
     "5_9_b": {
         "lr": 7.5e-6,
         "distributed": "ddp",
         "gpu_count": 4,
         "batch_size": 8,
-        "use_lora": True
+        "use_lora": True,
+        "beta": 0.1,
     },
     "9_12_b": {
         "lr": 5e-6,
@@ -42,7 +52,8 @@ DPO_CONFIG = {
         "gpu_count": 4,
         "use_lora": True,
         "batch_size": 32,
-        "gradient_checkpointing": False
+        "gradient_checkpointing": False,
+        "beta": 0.1,
     },
     "12_14_b": {
         "lr": 8.5e-6,
@@ -50,7 +61,8 @@ DPO_CONFIG = {
         "gpu_count": 4,
         "use_lora": True,
         "batch_size": 24,
-        "gradient_checkpointing": False
+        "gradient_checkpointing": False,
+        "beta": 0.15,  # large model, more conservative
     },
     "14_15_b": {
         "lr": 8.5e-6,
@@ -58,7 +70,8 @@ DPO_CONFIG = {
         "gpu_count": 8,
         "use_lora": True,
         "batch_size": 18,
-        "gradient_checkpointing": False
+        "gradient_checkpointing": False,
+        "beta": 0.15,
     },
     "15_40_b": {
         "lr": 8e-6,
@@ -66,7 +79,8 @@ DPO_CONFIG = {
         "gpu_count": 8,
         "use_lora": True,
         "batch_size": 16,
-        "gradient_checkpointing": False
+        "gradient_checkpointing": False,
+        "beta": 0.2,  # very large model, protect learned knowledge
     },
     "40_80_b": {
         "lr": 8e-6,
@@ -74,8 +88,9 @@ DPO_CONFIG = {
         "gpu_count": 8,
         "use_lora": True,
         "batch_size": 8,
-        "gradient_checkpointing": False
-    }        
+        "gradient_checkpointing": False,
+        "beta": 0.2,
+    },
 }
 
 for key in DPO_CONFIG:
@@ -126,6 +141,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
         "batch_size",
         "learning_rate",
         "min_lr_rate",
+        "beta",
         "use_liger",
         "optimizer",
         "disable_fa",
@@ -161,10 +177,11 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --save_total_limit 2 \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
+    --beta {beta} \
     --weight_decay 0.01 \
     --lr_scheduler_type cosine_with_min_lr \
     --warmup_ratio 0.05 \
-    --lr_scheduler_kwargs "{\\"min_lr_rate\\": 0.25}" \
+    --lr_scheduler_kwargs "{\\"min_lr_rate\\": 0.1}" \
     --tf32 True \
     --gradient_checkpointing {gradient_checkpointing} \
     --optim {optimizer} \
@@ -199,7 +216,8 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": 3,
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.25,
+        "min_lr_rate": 0.1,  # was 0.25; deeper cosine decay = better final convergence
+        "beta": config.get("beta", 0.1),  # DPO KL penalty, dynamic per model size
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
         "use_lora": config.get("use_lora", False),
