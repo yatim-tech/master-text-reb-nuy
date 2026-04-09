@@ -44,8 +44,8 @@ class TrainingArguments(transformers.TrainingArguments):
 @dataclass
 class LoraArguments:
     lora_r: int = 128
-    lora_alpha: int = 512
-    lora_dropout: float = 0.1
+    lora_alpha: int = 256  # was 512; tuned to 256 for consistency with DPO/GRPO (ratio 2x)
+    lora_dropout: float = 0.0  # was 0.1; modern instruct fine-tuning uses 0 dropout
     lora_target_modules: str = "all"  # all for all linear; "q_proj v_proj"
     lora_weight_path: str = ""
     lora_bias: str = "none"

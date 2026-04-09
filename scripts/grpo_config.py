@@ -18,6 +18,7 @@ GRPO_CONFIG = {
         "gpu_count": 1,
         "batch_size": 40,
         "vllm_gpu_memory_utilization": 0.4,
+        "num_generations": 8,  # small model, can afford more generations
     },
     "1_2_b": {
         "lr": 8e-6,
@@ -25,6 +26,7 @@ GRPO_CONFIG = {
         "gpu_count": 1,
         "batch_size": 40,
         "vllm_gpu_memory_utilization": 0.4,
+        "num_generations": 8,  # small model, can afford more generations
     },
     "2_4_b": {
         "lr": 8e-6,
@@ -33,6 +35,7 @@ GRPO_CONFIG = {
         "batch_size": 42,
         "vllm_gpu_memory_utilization": 0.35,
         "use_lora": True,
+        "num_generations": 6,
     },
     "4_5_b": {
         "lr": 6e-6,
@@ -41,6 +44,7 @@ GRPO_CONFIG = {
         "batch_size": 42,
         "use_lora": True,
         "vllm_gpu_memory_utilization": 0.4,
+        "num_generations": 6,
     },
     "5_6_b": {
         "lr": 6e-6,
@@ -49,6 +53,7 @@ GRPO_CONFIG = {
         "batch_size": 42,
         "use_lora": True,
         "vllm_gpu_memory_utilization": 0.4,
+        "num_generations": 6,
     },
     "6_9_b": {
         "lr": 6e-6,
@@ -57,6 +62,7 @@ GRPO_CONFIG = {
         "batch_size": 24,
         "use_lora": True,
         "vllm_gpu_memory_utilization": 0.5,
+        "num_generations": 4,
     },
     "9_12_b": {
         "lr": 6e-6,
@@ -65,6 +71,7 @@ GRPO_CONFIG = {
         "use_lora": True,
         "batch_size": 16,
         "vllm_gpu_memory_utilization": 0.6,
+        "num_generations": 4,
     },
     "12_15_b": {
         "lr": 5e-6,
@@ -73,6 +80,7 @@ GRPO_CONFIG = {
         "use_lora": True,
         "batch_size": 2,
         "vllm_gpu_memory_utilization": 0.8,
+        "num_generations": 2,  # memory constrained, keep low
     },
     "15_20_b": {
         "lr": 5e-6,
@@ -82,6 +90,7 @@ GRPO_CONFIG = {
         "batch_size": 16,
         "vllm_gpu_memory_utilization": 0.6,
         "use_vllm": False,
+        "num_generations": 2,  # large model, keep low to stay within time
     },
     "20_40_b": {
         "lr": 4e-6,
@@ -92,6 +101,7 @@ GRPO_CONFIG = {
         "vllm_gpu_memory_utilization": 0.6,
         "use_vllm": False,
         "use_4bit": True,
+        "num_generations": 2,  # very large model, keep low
     },
     "40_80_b": {
         "lr": 3e-6,
@@ -102,6 +112,7 @@ GRPO_CONFIG = {
         "vllm_gpu_memory_utilization": 0.7,
         "use_vllm": False,
         "use_4bit": True,
+        "num_generations": 2,  # very large model, keep low
     },
 }
 
@@ -276,7 +287,7 @@ def get_training_json(train_info: dict) -> dict:
         "gradient_checkpointing": get_gradient_checkpointing(model_name),
         "gradient_accumulation_steps": 4,
         "vllm_gpu_memory_utilization": config.get("vllm_gpu_memory_utilization", 0.4),
-        "num_generations": 2,
+        "num_generations": config.get("num_generations", 4),  # dynamic per model size, was hardcoded 2
         "use_vllm": get_use_vllm(model_architecture, model_name),
         "tensor_parallel": config.get("tensor_parallel", False),
         "use_4bit": config.get("use_4bit", False),
