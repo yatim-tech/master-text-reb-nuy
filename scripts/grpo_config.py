@@ -19,6 +19,7 @@ GRPO_CONFIG = {
         "batch_size": 40,
         "vllm_gpu_memory_utilization": 0.4,
         "num_generations": 8,  # small model, can afford more generations
+        "save_before_remaining_time": 3,
     },
     "1_2_b": {
         "lr": 8e-6,
@@ -27,6 +28,7 @@ GRPO_CONFIG = {
         "batch_size": 40,
         "vllm_gpu_memory_utilization": 0.4,
         "num_generations": 8,  # small model, can afford more generations
+        "save_before_remaining_time": 3,
     },
     "2_4_b": {
         "lr": 8e-6,
@@ -36,6 +38,7 @@ GRPO_CONFIG = {
         "vllm_gpu_memory_utilization": 0.35,
         "use_lora": True,
         "num_generations": 6,
+        "save_before_remaining_time": 3,
     },
     "4_5_b": {
         "lr": 6e-6,
@@ -45,6 +48,7 @@ GRPO_CONFIG = {
         "use_lora": True,
         "vllm_gpu_memory_utilization": 0.4,
         "num_generations": 6,
+        "save_before_remaining_time": 4,
     },
     "5_6_b": {
         "lr": 6e-6,
@@ -54,6 +58,7 @@ GRPO_CONFIG = {
         "use_lora": True,
         "vllm_gpu_memory_utilization": 0.4,
         "num_generations": 6,
+        "save_before_remaining_time": 5,
     },
     "6_9_b": {
         "lr": 6e-6,
@@ -63,6 +68,7 @@ GRPO_CONFIG = {
         "use_lora": True,
         "vllm_gpu_memory_utilization": 0.5,
         "num_generations": 4,
+        "save_before_remaining_time": 6,
     },
     "9_12_b": {
         "lr": 6e-6,
@@ -72,6 +78,7 @@ GRPO_CONFIG = {
         "batch_size": 16,
         "vllm_gpu_memory_utilization": 0.6,
         "num_generations": 4,
+        "save_before_remaining_time": 7,
     },
     "12_15_b": {
         "lr": 5e-6,
@@ -81,6 +88,7 @@ GRPO_CONFIG = {
         "batch_size": 2,
         "vllm_gpu_memory_utilization": 0.8,
         "num_generations": 2,  # memory constrained, keep low
+        "save_before_remaining_time": 8,
     },
     "15_20_b": {
         "lr": 5e-6,
@@ -91,6 +99,7 @@ GRPO_CONFIG = {
         "vllm_gpu_memory_utilization": 0.6,
         "use_vllm": False,
         "num_generations": 2,  # large model, keep low to stay within time
+        "save_before_remaining_time": 10,
     },
     "20_40_b": {
         "lr": 4e-6,
@@ -102,6 +111,7 @@ GRPO_CONFIG = {
         "use_vllm": False,
         "use_4bit": True,
         "num_generations": 2,  # very large model, keep low
+        "save_before_remaining_time": 12,
     },
     "40_80_b": {
         "lr": 3e-6,
@@ -113,6 +123,7 @@ GRPO_CONFIG = {
         "use_vllm": False,
         "use_4bit": True,
         "num_generations": 2,  # very large model, keep low
+        "save_before_remaining_time": 15,  # 8 GPUs + 4bit, save takes time
     },
 }
 
@@ -187,6 +198,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
         "batch_size",
         "learning_rate",
         "min_lr_rate",
+        "weight_decay",
         "use_liger",
         "optimizer",
         "vllm_gpu_memory_utilization",
@@ -226,7 +238,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --save_total_limit 2 \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
-    --weight_decay 0.01 \
+    --weight_decay {weight_decay} \
     --lr_scheduler_type cosine_with_min_lr \
     --warmup_ratio 0.05 \
     --lr_scheduler_kwargs "{\\"min_lr_rate\\": 0.1}" \
@@ -288,6 +300,7 @@ def get_training_json(train_info: dict) -> dict:
         "gradient_accumulation_steps": 4,
         "vllm_gpu_memory_utilization": config.get("vllm_gpu_memory_utilization", 0.4),
         "num_generations": config.get("num_generations", 4),  # dynamic per model size, was hardcoded 2
+        "weight_decay": 0.005,  # lower than SFT (0.01): reward signal is sparse, avoid over-regularizing
         "use_vllm": get_use_vllm(model_architecture, model_name),
         "tensor_parallel": config.get("tensor_parallel", False),
         "use_4bit": config.get("use_4bit", False),
@@ -300,13 +313,16 @@ def get_training_json(train_info: dict) -> dict:
         run_config["batch_size"] = int(run_config["batch_size"] / 1.5)
 
     train_request = deepcopy(train_info)
-    train_request["save_before_remaining_time"] = 3
+    train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["min_steps"] = 100
     train_request["adjust_batch_size"] = False
     train_request["periodic_save_steps"] = 500
 
     if if_contain_slow_reward_function(train_info["dataset_type"]):
-        train_request["save_before_remaining_time"] = 12
+        # slow reward needs more buffer; take max so large models still get enough time
+        train_request["save_before_remaining_time"] = max(
+            train_request["save_before_remaining_time"], 12
+        )
         if config["label"] == "0_1_b":
             run_config["batch_size"] = 8
         elif config["label"] == "1_2_b":

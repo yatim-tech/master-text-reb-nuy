@@ -19,6 +19,8 @@ FIXED_BS_CONFIG = {
     "facebook/opt-125m": {"batch_size": 48},
 }
 
+# save_before_remaining_time: minutes before deadline to trigger final eval+save.
+# DDP models save fast; DeepSpeed (ds) needs extra time for Zero-3 weight consolidation.
 INSTRUCT_CONFIG = {
     "0_1_b": {
         "lr": 0.0001,
@@ -26,6 +28,7 @@ INSTRUCT_CONFIG = {
         "gpu_count": 1,
         "batch_size": 140,
         "use_lora": False,
+        "save_before_remaining_time": 3,   # small model, fast save
     },
     "1_2_b": {
         "lr": 0.0001,
@@ -33,24 +36,28 @@ INSTRUCT_CONFIG = {
         "gpu_count": 1,
         "use_lora": False,
         "batch_size": 100,
+        "save_before_remaining_time": 3,
     },
     "2_4_b": {
         "lr": 7.5e-5,
         "distributed": "ddp",
         "gpu_count": 1,
         "batch_size": 48,
+        "save_before_remaining_time": 3,
     },
     "4_5_b": {
         "lr": 7e-5,
         "distributed": "ddp",
         "gpu_count": 2,
         "batch_size": 40,
+        "save_before_remaining_time": 4,
     },
     "5_9_b": {
         "lr": 3.5e-5,
         "distributed": "ddp",
         "gpu_count": 2,
         "batch_size": 28,
+        "save_before_remaining_time": 5,
     },
     "9_12_b": {
         "lr": 1e-4,
@@ -58,6 +65,7 @@ INSTRUCT_CONFIG = {
         "gpu_count": 2,
         "use_lora": True,
         "batch_size": 32,
+        "save_before_remaining_time": 6,
     },
     "12_15_b": {
         "lr": 1e-4,
@@ -65,6 +73,7 @@ INSTRUCT_CONFIG = {
         "gpu_count": 4,
         "use_lora": True,
         "batch_size": 30,
+        "save_before_remaining_time": 10,  # DS Zero-3: needs extra consolidation time
     },
     "15_40_b": {
         "lr": 8e-5,
@@ -72,6 +81,7 @@ INSTRUCT_CONFIG = {
         "gpu_count": 4,
         "use_lora": True,
         "batch_size": 18,
+        "save_before_remaining_time": 12,  # large DS model
     },
     "40_80_b": {
         "lr": 8e-5,
@@ -79,6 +89,7 @@ INSTRUCT_CONFIG = {
         "gpu_count": 8,
         "use_lora": True,
         "batch_size": 8,
+        "save_before_remaining_time": 15,  # very large DS model, 8 GPUs
     },
 }
 
@@ -287,7 +298,8 @@ def get_training_json(train_info: dict) -> dict:
 
     run_cmd = get_run_cmd(run_config, run_config["gpu_nums"])
     train_request = deepcopy(train_info)
-    train_request["save_before_remaining_time"] = 3
+    # Dynamic save buffer: larger models need more time for checkpoint I/O
+    train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["adjust_batch_size"] = False
     train_request["periodic_save_steps"] = 500
     train_request["checking_step"] = 70

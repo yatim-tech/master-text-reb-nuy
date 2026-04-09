@@ -14,6 +14,7 @@ DPO_CONFIG = {
         "gpu_count": 1,
         "batch_size": 16,
         "beta": 0.05,  # small model, allow more deviation from reference
+        "save_before_remaining_time": 3,
     },
     "1_2_b": {
         "lr": 8.7e-6,
@@ -21,6 +22,7 @@ DPO_CONFIG = {
         "gpu_count": 1,
         "batch_size": 12,
         "beta": 0.05,
+        "save_before_remaining_time": 3,
     },
     "2_4_b": {
         "lr": 6.5e-6,
@@ -29,6 +31,7 @@ DPO_CONFIG = {
         "batch_size": 12,
         "use_lora": True,
         "beta": 0.05,
+        "save_before_remaining_time": 3,
     },
     "4_5_b": {
         "lr": 6.25e-6,
@@ -37,6 +40,7 @@ DPO_CONFIG = {
         "batch_size": 12,
         "use_lora": True,
         "beta": 0.1,  # medium model, balanced
+        "save_before_remaining_time": 4,
     },
     "5_9_b": {
         "lr": 7.5e-6,
@@ -45,6 +49,7 @@ DPO_CONFIG = {
         "batch_size": 8,
         "use_lora": True,
         "beta": 0.1,
+        "save_before_remaining_time": 5,
     },
     "9_12_b": {
         "lr": 5e-6,
@@ -54,6 +59,7 @@ DPO_CONFIG = {
         "batch_size": 32,
         "gradient_checkpointing": False,
         "beta": 0.1,
+        "save_before_remaining_time": 8,   # DS Zero-3 consolidation
     },
     "12_14_b": {
         "lr": 8.5e-6,
@@ -63,6 +69,7 @@ DPO_CONFIG = {
         "batch_size": 24,
         "gradient_checkpointing": False,
         "beta": 0.15,  # large model, more conservative
+        "save_before_remaining_time": 10,
     },
     "14_15_b": {
         "lr": 8.5e-6,
@@ -72,6 +79,7 @@ DPO_CONFIG = {
         "batch_size": 18,
         "gradient_checkpointing": False,
         "beta": 0.15,
+        "save_before_remaining_time": 12,
     },
     "15_40_b": {
         "lr": 8e-6,
@@ -81,6 +89,7 @@ DPO_CONFIG = {
         "batch_size": 16,
         "gradient_checkpointing": False,
         "beta": 0.2,  # very large model, protect learned knowledge
+        "save_before_remaining_time": 12,
     },
     "40_80_b": {
         "lr": 8e-6,
@@ -90,6 +99,7 @@ DPO_CONFIG = {
         "batch_size": 8,
         "gradient_checkpointing": False,
         "beta": 0.2,
+        "save_before_remaining_time": 15,  # very large DS model, 8 GPUs
     },
 }
 
@@ -178,7 +188,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --logging_steps 5 \
     --learning_rate {learning_rate} \
     --beta {beta} \
-    --weight_decay 0.01 \
+    --weight_decay {weight_decay} \
     --lr_scheduler_type cosine_with_min_lr \
     --warmup_ratio 0.05 \
     --lr_scheduler_kwargs "{\\"min_lr_rate\\": 0.1}" \
@@ -228,6 +238,7 @@ def get_training_json(train_info: dict) -> dict:
         "distributed": config.get("distributed", "ddp"),
         "gradient_checkpointing": get_gradient_checkpointing(model_name),
         "gradient_accumulation_steps": 1,
+        "weight_decay": 0.001,   # lower than SFT (0.01): alignment doesn't need heavy regularization
         "use_attn_implementation": "kernels-community/vllm-flash-attn3" if train_info.get("is_openai", False) else ""
     }
     
@@ -259,7 +270,8 @@ def get_training_json(train_info: dict) -> dict:
     if run_config["disable_fa"] == "False":
         run_cmd = run_cmd + " --padding_free True"
     train_request = deepcopy(train_info)
-    train_request["save_before_remaining_time"] = 3
+    # Dynamic save buffer: larger DS models need more time for Zero-3 checkpoint consolidation
+    train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["min_steps"] = 100
     train_request["adjust_batch_size"] = False
     train_request["periodic_save_steps"] = 500
