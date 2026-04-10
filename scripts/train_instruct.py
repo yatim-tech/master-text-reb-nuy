@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from transformers import Trainer
 from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
 
-# from packing.packed_dataset import PackedDataset
+from packing.packed_dataset import PackedDataset
 from transformers import (
     Trainer,
     TrainingArguments,
@@ -44,9 +44,9 @@ class TrainingArguments(transformers.TrainingArguments):
 @dataclass
 class LoraArguments:
     lora_r: int = 128
-    lora_alpha: int = 256  # was 512; tuned to 256 for consistency with DPO/GRPO (ratio 2x)
-    lora_dropout: float = 0.0  # was 0.1; modern instruct fine-tuning uses 0 dropout
-    lora_target_modules: str = "all"  # all for all linear; "q_proj v_proj"
+    lora_alpha: int = 25
+    lora_dropout: float = 0.0
+    lora_target_modules: str = "all"
     lora_weight_path: str = ""
     lora_bias: str = "none"
     q_lora: bool = False
@@ -59,7 +59,7 @@ def find_all_linear_names(model):
             names = name.split(".")
             lora_module_names.add(names[0] if len(names) == 1 else names[-1])
 
-    if "lm_head" in lora_module_names:  # needed for 16-bit
+    if "lm_head" in lora_module_names:
         lora_module_names.remove("lm_head")
     return list(lora_module_names)
 
@@ -73,7 +73,6 @@ def print_trainable_parameters(model):
     embedding_lm_head_param_count = 0
     for name, param in model.named_parameters():
         num_params = param.numel()
-        # if using DS Zero 3 and the weights are initialized empty
         if num_params == 0 and hasattr(param, "ds_numel"):
             num_params = param.ds_numel
 
@@ -120,8 +119,6 @@ def load_lora_model(training_args: TrainingArguments, model_path: str, lora_args
             else None
         ),
     )
-    # do not resize tokem embeddings in LOra --> will encounter size mismatch error in evaluation 
-    # model.resize_token_embeddings(token_nums)
     # convert to lora
     if lora_args.lora_target_modules == "all":
         target_modules = find_all_linear_names(model)
@@ -136,7 +133,6 @@ def load_lora_model(training_args: TrainingArguments, model_path: str, lora_args
         lora_dropout=lora_args.lora_dropout,
         bias=lora_args.lora_bias,
         task_type="CAUSAL_LM",
-        # modules_to_save=["lm_head", "embed_tokens"],  # because we retrain the embedding
     )
 
     if lora_args.q_lora:
@@ -150,7 +146,6 @@ def load_lora_model(training_args: TrainingArguments, model_path: str, lora_args
         model.enable_input_require_grads()
 
     model.config.use_cache = False
-    # Activate computing load balancing loss iin MixtralForCausalLM
     if hasattr(model.config, "output_router_logits"):
         setattr(model.config, "output_router_logits", True)
 
@@ -179,7 +174,6 @@ def load_model(training_args: TrainingArguments, model_path: str, token_nums: in
         torch_dtype=torch.bfloat16,
         attn_implementation=attn_implementation,
     )
-    # model.resize_token_embeddings(token_nums)
     return model
 
 
@@ -196,26 +190,25 @@ def main():
     (training_args, lora_args) = argument_parser.parse_args_into_dataclasses()
     train_info = json.load(open(training_args.request_path, "r"))
     train_request = train_info["train_request"]
-    # log_info(f"Training request: {train_request}", "start")
+    log_info(f"Training request: {train_request}", "start")
     task_id = train_request["task_id"]
 
     tokenizer = AutoTokenizer.from_pretrained(train_request["model_path"], trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # wandb_init_success = init_wandb(train_request)
-    # if not wandb_init_success:
-    #     log_info("WANDB_API_KEY is not set, do not report to wandb")
-    #     training_args.report_to = "none"    
-    # else:
-    #     log_info("WANDB_API_KEY is provided, we will report to wandb")
-    #     training_args.report_to = "wandb"
+    wandb_init_success = init_wandb(train_request)
+    if not wandb_init_success:
+        log_info("WANDB_API_KEY is not set, do not report to wandb")
+        training_args.report_to = "none"    
+    else:
+        log_info("WANDB_API_KEY is provided, we will report to wandb")
+        training_args.report_to = "wandb"
         
     max_length = get_max_length_config()
     if "max_length" in train_request:
         max_length = train_request["max_length"]
 
-    # we already tokenize the data and save it to train_tokenized.json and dev_tokenized.json
     train_ds = MyDataset(
         tokenizer,
        f"datasets/train_tokenized_{task_id}.json",
@@ -236,8 +229,7 @@ def main():
         training_args.per_device_train_batch_size
         * training_args.gradient_accumulation_steps
         * training_args.world_size
-    )  # number of steps in the original training
-    # min_steps here is per epoch
+    )
     if original_steps < train_request["min_steps"]:
         donot_pack = True
         log_info(f"original_steps: {original_steps} < min_steps: {train_request['min_steps']}, do not pack the dataset")
@@ -285,9 +277,6 @@ def main():
         * training_args.world_size
     )
     log_info(f"total_steps_per_epoch: {total_steps_per_epoch}")
-    # consider reducing the batch_size if it is quite big
-    # num_steps = len(train_ds) * training_args.num_train_epochs / (training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps * training_args.world_size)
-    # num_steps > min_step ->
     max_batch_size_theory = len(train_ds) / (
         training_args.gradient_accumulation_steps
         * training_args.world_size
@@ -299,13 +288,11 @@ def main():
 
     original_batch_size = training_args.per_device_train_batch_size
     if training_args.per_device_train_batch_size > max_batch_size_theory:
-        # if batch_size is quite big set it to this value to make sure that we have at least min_steps
         if train_request.get("adjust_batch_size", True):
             log_info(
                 f"batch_size ({training_args.per_device_train_batch_size}) is quite big, reducing it to {max_batch_size_theory}"
             )
             training_args.per_device_train_batch_size = max_batch_size_theory
-            # need to update total_steps_per_epoch
             total_steps_per_epoch = len(train_ds) // (
                 training_args.per_device_train_batch_size
                 * training_args.gradient_accumulation_steps
@@ -317,7 +304,6 @@ def main():
         model = load_lora_model(training_args, train_request["model_path"], lora_args, len(tokenizer))
     else:
         model = load_model(training_args, train_request["model_path"], len(tokenizer))
-        # some model need to resize the token embeddings or encounter the size mismatch error; only for full-weight models
         resize_if_needed(train_request["model_name"], model, len(tokenizer))
     
     try:
@@ -325,17 +311,15 @@ def main():
     except:
         pass
     
-    # some model need to set the generation config or encounter the invalid generation config error
     set_generation_config(train_request["model_name"], model)
 
-    # Check if this is the main process and create the output directory
-    if is_main_process(LOCAL_RANK):  # Only create directory on main process
+    if is_main_process(LOCAL_RANK):
         os.makedirs(training_args.output_dir, exist_ok=True)
         log_info(f"Created output directory: {training_args.output_dir}")
     
     periodic_save_steps = train_request.get("periodic_save_steps", -1)
     log_info(f"periodic_save_steps: {periodic_save_steps}")
-    training_args.save_only_model = True  # only save the model, not the optimizer
+    training_args.save_only_model = True
     
     max_steps = train_request.get("max_steps", -1)
     log_info(f"max_steps: {max_steps}")
@@ -356,7 +340,6 @@ def main():
     log_info(f"total_steps_per_epoch: {total_steps_per_epoch}; total_steps_all_epochs: {total_steps_all_epochs}")
     
     success_file = os.path.join(training_args.output_dir, "success.txt")
-    # remove the success file if it exists
     if is_main_process(LOCAL_RANK) and os.path.exists(success_file):
         os.remove(success_file)
     

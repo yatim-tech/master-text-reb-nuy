@@ -2,18 +2,13 @@ from model_utility import get_model_architecture, get_model_num_params, get_use_
 from copy import deepcopy
 from lrs_lookup import get_dpo_lr
 
-# beta = KL-divergence penalty. Lower = model explores freely from reference;
-# Higher = stays closer to reference. Tune per model size:
-# Small models (<4B): 0.05 (more exploratory, less prior knowledge to protect)
-# Medium models (4-12B): 0.1  (balanced)
-# Large models (>12B): 0.15-0.2 (conservative, protect learned knowledge)
 DPO_CONFIG = {
     "0_1_b": {
         "lr": 1.35e-5,
         "distributed": "ddp",
         "gpu_count": 1,
         "batch_size": 16,
-        "beta": 0.05,  # small model, allow more deviation from reference
+        "beta": 0.05,
         "save_before_remaining_time": 3,
     },
     "1_2_b": {
@@ -39,7 +34,7 @@ DPO_CONFIG = {
         "gpu_count": 4,
         "batch_size": 12,
         "use_lora": True,
-        "beta": 0.1,  # medium model, balanced
+        "beta": 0.1,
         "save_before_remaining_time": 4,
     },
     "5_9_b": {
@@ -59,7 +54,7 @@ DPO_CONFIG = {
         "batch_size": 32,
         "gradient_checkpointing": False,
         "beta": 0.1,
-        "save_before_remaining_time": 8,   # DS Zero-3 consolidation
+        "save_before_remaining_time": 8,
     },
     "12_14_b": {
         "lr": 8.5e-6,
@@ -68,7 +63,7 @@ DPO_CONFIG = {
         "use_lora": True,
         "batch_size": 24,
         "gradient_checkpointing": False,
-        "beta": 0.15,  # large model, more conservative
+        "beta": 0.15,
         "save_before_remaining_time": 10,
     },
     "14_15_b": {
@@ -88,7 +83,7 @@ DPO_CONFIG = {
         "use_lora": True,
         "batch_size": 16,
         "gradient_checkpointing": False,
-        "beta": 0.2,  # very large model, protect learned knowledge
+        "beta": 0.2,
         "save_before_remaining_time": 12,
     },
     "40_80_b": {
@@ -99,7 +94,7 @@ DPO_CONFIG = {
         "batch_size": 8,
         "gradient_checkpointing": False,
         "beta": 0.2,
-        "save_before_remaining_time": 15,  # very large DS model, 8 GPUs
+        "save_before_remaining_time": 15,
     },
 }
 
@@ -140,7 +135,7 @@ def get_config(param_nums: int) -> dict:
         }
     if param_nums < 4_000_000_000 and param_nums > 1_330_000_000:
         result["gpu_count"] = 2
-    if param_nums > 13_330_000_000: # 8 GPUs for 13.3B
+    if param_nums > 13_330_000_000:
         result["gpu_count"] = 8
     return result
 
@@ -221,22 +216,22 @@ def _get_epoch_num(param_nums: int, hours: float) -> int:
     DPO is slower than SFT per sample (reference model + chosen/rejected pair),
     so thresholds are slightly more conservative than Instruct.
     """
-    if param_nums < 1_000_000_000:       # <1B
+    if param_nums < 1_000_000_000:
         if hours < 2:    return 2
         if hours < 4:    return 3
         return 4
-    elif param_nums < 4_000_000_000:     # 1-4B
+    elif param_nums < 4_000_000_000:
         if hours < 2:    return 1
         if hours < 5:    return 2
         return 3
-    elif param_nums < 9_000_000_000:     # 4-9B
+    elif param_nums < 9_000_000_000:
         if hours < 3:    return 1
         if hours < 7:    return 2
         return 3
-    elif param_nums < 15_000_000_000:    # 9-15B
+    elif param_nums < 15_000_000_000:
         if hours < 5:    return 1
         return 2
-    else:                                # >15B
+    else:
         return 1
 
 
@@ -246,15 +241,15 @@ def _get_periodic_save_steps(param_nums: int) -> int:
     so fewer steps/hour -> can use slightly larger intervals than Instruct.
     Target: save every ~15-20 minutes.
     """
-    if param_nums < 1_000_000_000:    # <1B: ~600-900 steps/hour
+    if param_nums < 1_000_000_000:
         return 150
-    elif param_nums < 4_000_000_000:  # 1-4B: ~200-500 steps/hour
+    elif param_nums < 4_000_000_000:
         return 100
-    elif param_nums < 9_000_000_000:  # 4-9B: ~80-200 steps/hour
+    elif param_nums < 9_000_000_000:
         return 80
-    elif param_nums < 15_000_000_000: # 9-15B: ~30-80 steps/hour
+    elif param_nums < 15_000_000_000:
         return 50
-    else:                             # >15B: very slow
+    else:
         return 50
 
 
@@ -268,8 +263,8 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.1,  # was 0.25; deeper cosine decay = better final convergence
-        "beta": config.get("beta", 0.1),  # DPO KL penalty, dynamic per model size
+        "min_lr_rate": 0.1,
+        "beta": config.get("beta", 0.1),
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
         "use_lora": config.get("use_lora", False),
@@ -280,7 +275,7 @@ def get_training_json(train_info: dict) -> dict:
         "distributed": config.get("distributed", "ddp"),
         "gradient_checkpointing": get_gradient_checkpointing(model_name),
         "gradient_accumulation_steps": 1,
-        "weight_decay": 0.001,   # lower than SFT (0.01): alignment doesn't need heavy regularization
+        "weight_decay": 0.001,
         "use_attn_implementation": "kernels-community/vllm-flash-attn3" if train_info.get("is_openai", False) else ""
     }
     
@@ -292,7 +287,6 @@ def get_training_json(train_info: dict) -> dict:
         run_config["gradient_accumulation_steps"] = min(4, int(64 / total_batch_size))
     
     if train_info["find_lk_lr"]:
-        # get lr from lrs_lookup.py
         lr = get_dpo_lr(model_name)
         if lr is not None:
             print(f"Using lr from lk: {lr}", flush=True)
@@ -312,7 +306,6 @@ def get_training_json(train_info: dict) -> dict:
     if run_config["disable_fa"] == "False":
         run_cmd = run_cmd + " --padding_free True"
     train_request = deepcopy(train_info)
-    # Dynamic save buffer: larger DS models need more time for Zero-3 checkpoint consolidation
     train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["min_steps"] = 100
     train_request["adjust_batch_size"] = False

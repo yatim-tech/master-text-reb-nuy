@@ -19,8 +19,6 @@ FIXED_BS_CONFIG = {
     "facebook/opt-125m": {"batch_size": 48},
 }
 
-# save_before_remaining_time: minutes before deadline to trigger final eval+save.
-# DDP models save fast; DeepSpeed (ds) needs extra time for Zero-3 weight consolidation.
 INSTRUCT_CONFIG = {
     "0_1_b": {
         "lr": 0.0001,
@@ -28,7 +26,7 @@ INSTRUCT_CONFIG = {
         "gpu_count": 1,
         "batch_size": 140,
         "use_lora": False,
-        "save_before_remaining_time": 3,   # small model, fast save
+        "save_before_remaining_time": 3,
     },
     "1_2_b": {
         "lr": 0.0001,
@@ -73,7 +71,7 @@ INSTRUCT_CONFIG = {
         "gpu_count": 4,
         "use_lora": True,
         "batch_size": 30,
-        "save_before_remaining_time": 10,  # DS Zero-3: needs extra consolidation time
+        "save_before_remaining_time": 10,
     },
     "15_40_b": {
         "lr": 8e-5,
@@ -81,7 +79,7 @@ INSTRUCT_CONFIG = {
         "gpu_count": 4,
         "use_lora": True,
         "batch_size": 18,
-        "save_before_remaining_time": 12,  # large DS model
+        "save_before_remaining_time": 12,
     },
     "40_80_b": {
         "lr": 8e-5,
@@ -89,7 +87,7 @@ INSTRUCT_CONFIG = {
         "gpu_count": 8,
         "use_lora": True,
         "batch_size": 8,
-        "save_before_remaining_time": 15,  # very large DS model, 8 GPUs
+        "save_before_remaining_time": 15,
     },
 }
 
@@ -211,22 +209,22 @@ def _get_epoch_num(param_nums: int, hours: float) -> int:
     too low means the LR collapses before training time runs out.
     The time-aware stopping (WhenToEvalHandler) handles actual early exits.
     """
-    if param_nums < 1_000_000_000:       # <1B: very fast model
+    if param_nums < 1_000_000_000:
         if hours < 1.5:  return 2
         if hours < 3:    return 3
         return 5
-    elif param_nums < 4_000_000_000:     # 1-4B
+    elif param_nums < 4_000_000_000:
         if hours < 2:    return 1
         if hours < 4:    return 2
         return 3
-    elif param_nums < 9_000_000_000:     # 4-9B
+    elif param_nums < 9_000_000_000:
         if hours < 3:    return 1
         if hours < 6:    return 2
         return 3
-    elif param_nums < 15_000_000_000:    # 9-15B
+    elif param_nums < 15_000_000_000:
         if hours < 4:    return 1
         return 2
-    else:                                # >15B: likely can't finish even 1 full epoch
+    else:
         return 1
 
 
@@ -237,15 +235,15 @@ def _get_periodic_save_steps(param_nums: int) -> int:
     Larger models are already slow per step, so larger intervals are fine.
     Instruct baseline (most steps/hour among all task types).
     """
-    if param_nums < 1_000_000_000:    # <1B: ~800-1200 steps/hour
+    if param_nums < 1_000_000_000:
         return 200
-    elif param_nums < 4_000_000_000:  # 1-4B: ~300-600 steps/hour
+    elif param_nums < 4_000_000_000:
         return 150
-    elif param_nums < 9_000_000_000:  # 4-9B: ~100-250 steps/hour
+    elif param_nums < 9_000_000_000:
         return 100
-    elif param_nums < 15_000_000_000: # 9-15B: ~40-100 steps/hour
+    elif param_nums < 15_000_000_000:
         return 80
-    else:                             # >15B: very slow, 50 is already fine
+    else:
         return 50
 
 
@@ -259,7 +257,7 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.1,  # was 0.25; deeper cosine decay = better final convergence
+        "min_lr_rate": 0.1,
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
         "use_lora": config.get("use_lora", False),
@@ -278,16 +276,10 @@ def get_training_json(train_info: dict) -> dict:
         ),
     }
 
-    # there are models that do not support packing, so we need to check if the model supports packing
     if run_config["disable_fa"] == "True" or model_architecture.strip().lower() in [
         "optforcausallm"
     ]:
         run_config["packing"] = "False"
-
-    # data_size = get_data_size(train_info["request_path"])
-
-    # if run_config["disable_fa"]: # if FA is not usable
-    #     run_config["batch_size"] = run_config["batch_size"] * 2
 
     if model_name in FIXED_BS_CONFIG:
         run_config["batch_size"] = FIXED_BS_CONFIG[model_name]["batch_size"]
@@ -299,7 +291,7 @@ def get_training_json(train_info: dict) -> dict:
         "falconforcausallm",
     ]:
         run_config["batch_size"] = int(run_config["batch_size"] // 2)
-        if model_name == "EleutherAI/pythia-160m":  # reduce more
+        if model_name == "EleutherAI/pythia-160m":
             run_config["batch_size"] = int(run_config["batch_size"] / 1.5)
         elif "pythia" in model_name.lower():
             run_config["batch_size"] = int(run_config["batch_size"] / 1.8)
@@ -323,10 +315,9 @@ def get_training_json(train_info: dict) -> dict:
         run_config["gradient_accumulation_steps"] = int(64 / data_per_step)
 
     if model_architecture.strip().lower() in ["gptossforcausallm"]:
-        run_config["use_lora"] = False  # currently, gptoss does not support lora
+        run_config["use_lora"] = False
 
     if train_info["find_lk_lr"]:
-        # get lr from lrs_lookup.py
         lr = get_instruct_lr(model_name)
         if lr is not None:
             print(f"Using lr from lk: {lr}", flush=True)
@@ -344,7 +335,6 @@ def get_training_json(train_info: dict) -> dict:
 
     run_cmd = get_run_cmd(run_config, run_config["gpu_nums"])
     train_request = deepcopy(train_info)
-    # Dynamic save buffer: larger models need more time for checkpoint I/O
     train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["adjust_batch_size"] = False
     train_request["periodic_save_steps"] = _get_periodic_save_steps(param_nums)

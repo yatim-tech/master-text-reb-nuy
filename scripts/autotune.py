@@ -15,10 +15,8 @@ from job_handler import create_job_text, start_tuning_container
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# Paths that match text_trainer.py conventions (inside the training environment)
 SOUTPUTS_DIR = "/workspace/scripts/soutputs"
-LOG_DIR = "datasets"  # ds_folder in text_trainer.py
-
+LOG_DIR = "datasets"
 
 # ---------------------------------------------------------------------------
 # Metric extraction helpers
@@ -33,14 +31,12 @@ def _find_trainer_state(output_dir: str) -> str | None:
     candidates = [output_dir] + sorted(
         glob.glob(f"{output_dir}_*"),
         key=lambda p: int(p.rsplit("_", 1)[-1]) if p.rsplit("_", 1)[-1].isdigit() else 0,
-        reverse=True,  # prefer latest run
+        reverse=True,
     )
     for base in candidates:
-        # Direct file in base dir
         direct = os.path.join(base, "trainer_state.json")
         if os.path.exists(direct):
             return direct
-        # Inside a checkpoint-N subdir (take the highest checkpoint)
         ckpt_files = sorted(
             glob.glob(os.path.join(base, "checkpoint-*", "trainer_state.json")),
             key=lambda p: int(re.search(r"checkpoint-(\d+)", p).group(1)),
@@ -67,7 +63,7 @@ def _parse_trainer_state(state_path: str, task_type: str) -> float:
             if values:
                 best = max(values)
                 logger.info(f"[trainer_state] eval_reward={best:.6f}  path={state_path}")
-                return -best  # negate so caller can minimise
+                return -best
         else:
             values = [e["eval_loss"] for e in log_history if "eval_loss" in e]
             if values:
@@ -127,14 +123,12 @@ def extract_eval_metric(iter_task_id: str, task_type: str) -> float:
     output_dir = os.path.join(SOUTPUTS_DIR, iter_task_id)
     log_path   = os.path.join(LOG_DIR, f"train_{iter_task_id}.log")
 
-    # --- Primary: trainer_state.json ---
     state_path = _find_trainer_state(output_dir)
     if state_path:
         score = _parse_trainer_state(state_path, task_type)
         if score != float("inf"):
             return score
 
-    # --- Fallback: raw log ---
     score = _parse_log_file(log_path, task_type)
     if score != float("inf"):
         return score
@@ -161,7 +155,6 @@ def main():
                         choices=["json", "hf"], help="Dataset file format")
     args = parser.parse_args()
 
-    # Hyperparameter search grid
     lrs         = [3e-6, 5e-6, 8e-6]
     batch_sizes = [4, 8, 16]
     vllm_mems   = [0.4, 0.6, 0.8] if args.task_type == "grpo" else [None]
@@ -188,7 +181,6 @@ def main():
                     f"{'='*60}"
                 )
 
-                # Pass hyperparameters via env vars (picked up by DockerEnvironment)
                 os.environ["AUTOTUNE_LR"]         = str(lr)
                 os.environ["AUTOTUNE_BATCH_SIZE"] = str(bs)
                 if mem is not None:

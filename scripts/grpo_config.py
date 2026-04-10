@@ -18,7 +18,7 @@ GRPO_CONFIG = {
         "gpu_count": 1,
         "batch_size": 40,
         "vllm_gpu_memory_utilization": 0.4,
-        "num_generations": 8,  # small model, can afford more generations
+        "num_generations": 8,
         "save_before_remaining_time": 3,
     },
     "1_2_b": {
@@ -27,7 +27,7 @@ GRPO_CONFIG = {
         "gpu_count": 1,
         "batch_size": 40,
         "vllm_gpu_memory_utilization": 0.4,
-        "num_generations": 8,  # small model, can afford more generations
+        "num_generations": 8,
         "save_before_remaining_time": 3,
     },
     "2_4_b": {
@@ -87,7 +87,7 @@ GRPO_CONFIG = {
         "use_lora": True,
         "batch_size": 2,
         "vllm_gpu_memory_utilization": 0.8,
-        "num_generations": 2,  # memory constrained, keep low
+        "num_generations": 2,
         "save_before_remaining_time": 8,
     },
     "15_20_b": {
@@ -98,7 +98,7 @@ GRPO_CONFIG = {
         "batch_size": 16,
         "vllm_gpu_memory_utilization": 0.6,
         "use_vllm": False,
-        "num_generations": 2,  # large model, keep low to stay within time
+        "num_generations": 2,
         "save_before_remaining_time": 10,
     },
     "20_40_b": {
@@ -110,7 +110,7 @@ GRPO_CONFIG = {
         "vllm_gpu_memory_utilization": 0.6,
         "use_vllm": False,
         "use_4bit": True,
-        "num_generations": 2,  # very large model, keep low
+        "num_generations": 2,
         "save_before_remaining_time": 12,
     },
     "40_80_b": {
@@ -122,8 +122,8 @@ GRPO_CONFIG = {
         "vllm_gpu_memory_utilization": 0.7,
         "use_vllm": False,
         "use_4bit": True,
-        "num_generations": 2,  # very large model, keep low
-        "save_before_remaining_time": 15,  # 8 GPUs + 4bit, save takes time
+        "num_generations": 2,
+        "save_before_remaining_time": 15,
     },
 }
 
@@ -211,7 +211,6 @@ def get_run_cmd(config: dict, gpu_nums: int):
 
     start_cmd = "python"
     run_type = config["distributed"]
-    # if gpu_nums > 1 and run_type == "ddp":
     gpu_nums = get_gpu_count()
     start_cmd = f"torchrun --nproc_per_node={gpu_nums}"
     if run_type == "ds":
@@ -281,18 +280,18 @@ def _get_epoch_num(param_nums: int, hours: float) -> int:
     GRPO is the slowest task: each step requires generating num_generations
     samples and computing reward. Thresholds are most conservative here.
     """
-    if param_nums < 1_000_000_000:       # <1B: fast even with generation
+    if param_nums < 1_000_000_000:
         if hours < 2:    return 2
         if hours < 4:    return 3
         return 4
-    elif param_nums < 4_000_000_000:     # 1-4B
+    elif param_nums < 4_000_000_000:
         if hours < 3:    return 1
         if hours < 6:    return 2
         return 3
-    elif param_nums < 9_000_000_000:     # 4-9B
+    elif param_nums < 9_000_000_000:
         if hours < 4:    return 1
         return 2
-    else:                                # >=9B: generation + large model = very slow
+    else:
         return 1
 
 
@@ -302,13 +301,13 @@ def _get_periodic_save_steps(param_nums: int) -> int:
     Fewer steps/hour means larger intervals are still safe.
     Target: checkpoint every ~15-20 minutes of wall-clock time.
     """
-    if param_nums < 1_000_000_000:    # <1B with gen: ~400-700 steps/hour
+    if param_nums < 1_000_000_000:
         return 100
-    elif param_nums < 4_000_000_000:  # 1-4B: ~100-300 steps/hour
+    elif param_nums < 4_000_000_000:
         return 80
-    elif param_nums < 9_000_000_000:  # 4-9B: ~40-100 steps/hour
+    elif param_nums < 9_000_000_000:
         return 50
-    else:                             # >=9B: very slow per step
+    else:
         return 50
 
 
@@ -323,7 +322,7 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.1,  # was 0.25; deeper cosine decay = better final convergence
+        "min_lr_rate": 0.1,
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
         "use_lora": config.get("use_lora", False),
@@ -335,8 +334,8 @@ def get_training_json(train_info: dict) -> dict:
         "gradient_checkpointing": get_gradient_checkpointing(model_name),
         "gradient_accumulation_steps": 4,
         "vllm_gpu_memory_utilization": config.get("vllm_gpu_memory_utilization", 0.4),
-        "num_generations": config.get("num_generations", 4),  # dynamic per model size, was hardcoded 2
-        "weight_decay": 0.005,  # lower than SFT (0.01): reward signal is sparse, avoid over-regularizing
+        "num_generations": config.get("num_generations", 4),
+        "weight_decay": 0.005,
         "use_vllm": get_use_vllm(model_architecture, model_name),
         "tensor_parallel": config.get("tensor_parallel", False),
         "use_4bit": config.get("use_4bit", False),
@@ -355,7 +354,6 @@ def get_training_json(train_info: dict) -> dict:
     train_request["periodic_save_steps"] = _get_periodic_save_steps(param_nums)
 
     if if_contain_slow_reward_function(train_info["dataset_type"]):
-        # slow reward needs more buffer; take max so large models still get enough time
         train_request["save_before_remaining_time"] = max(
             train_request["save_before_remaining_time"], 12
         )
@@ -373,7 +371,7 @@ def get_training_json(train_info: dict) -> dict:
             run_config["batch_size"] = 16
             if (
                 model_name == "unsloth/gemma-2-9b-it"
-            ):  # encounter OOM error with batch_size 12
+            ):
                 run_config["batch_size"] = 8
         elif config["label"] == "9_12_b":
             run_config["batch_size"] = 16
@@ -382,7 +380,7 @@ def get_training_json(train_info: dict) -> dict:
         elif config["label"] == "15_20_b":
             run_config["batch_size"] = 2
         elif config["label"] == "20_40_b":
-            run_config["batch_size"] = 16  # this is high because we use 4bit
+            run_config["batch_size"] = 16
         elif config["label"] == "40_80_b":
             run_config["batch_size"] = 2
 
@@ -401,7 +399,6 @@ def get_training_json(train_info: dict) -> dict:
         run_config["use_vllm"] = False
 
     if train_info["find_lk_lr"] and allow_find_lk_lr:
-        # get lr from lrs_lookup.py
         has_python_execution = contain_python_execution(train_info["dataset_type"])
         if not has_python_execution:
             lr = get_grpo_lr(model_name)
