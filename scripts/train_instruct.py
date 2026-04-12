@@ -1,3 +1,12 @@
+import torch
+# Initialize CUDA before importing transformers/deepspeed to prevent
+# Triton driver error: "0 active drivers" during module-level autotune
+try:
+    if torch.cuda.is_available():
+        torch.cuda.init()
+except Exception:
+    pass
+
 from typing import Dict, Optional
 import requests
 import json
@@ -6,7 +15,6 @@ from utility import log_info, MyDataset
 from transformers.trainer_utils import get_last_checkpoint
 from transformers import AutoTokenizer, BitsAndBytesConfig
 import transformers
-import torch
 from transformers.trainer_utils import is_main_process
 from dataclasses import dataclass, field
 from transformers import Trainer
