@@ -189,7 +189,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --load_best_model_at_end False \
     --metric_for_best_model eval_loss \
     --save_only_model True \
-    --save_total_limit 2 \
+    --save_total_limit {save_total_limit} \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
     --beta {beta} \
@@ -274,6 +274,7 @@ def get_training_json(train_info: dict) -> dict:
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
         "num_cycles": _get_num_cycles(_get_epoch_num(param_nums, train_info["hours_to_complete"])),
+        "save_total_limit": max(2, _get_epoch_num(param_nums, train_info["hours_to_complete"])),
         "beta": config.get("beta", 0.1),
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",

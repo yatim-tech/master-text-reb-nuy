@@ -33,7 +33,7 @@ from peft import (
 from transformers import TrainerCallback
 import argparse
 import os
-from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
+from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb, average_checkpoints
 from state_manager import get_state, set_state
 
 # from packing.packed_dataset import PackedDataset
@@ -331,7 +331,10 @@ def main():
     print("Start training ...", flush=True)       
     # trainer.train()
     trainer.train()
-    
+
+    if is_main_process(LOCAL_RANK):
+        average_checkpoints(training_args.output_dir, train_request["submission_dir"])
+
     if is_main_process(LOCAL_RANK):
         with open(os.path.join(training_args.output_dir, "success.txt"), "w") as f:
             f.write("Success")

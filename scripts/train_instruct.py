@@ -18,7 +18,7 @@ import transformers
 from transformers.trainer_utils import is_main_process
 from dataclasses import dataclass, field
 from transformers import Trainer
-from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
+from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb, average_checkpoints
 
 from transformers import (
     Trainer,
@@ -379,7 +379,10 @@ def main():
     # last_checkpoint = get_last_checkpoint(training_args.output_dir)
     # log_info(f"last_checkpoint: {last_checkpoint}")
     trainer.train()
-    
+
+    if is_main_process(LOCAL_RANK):
+        average_checkpoints(training_args.output_dir, train_request["submission_dir"])
+
     if is_main_process(LOCAL_RANK):
         success_file = os.path.join(training_args.output_dir, "success.txt")
         with open(success_file, "w") as f:

@@ -349,6 +349,138 @@ def resize_if_needed(model_name, model, token_nums):
         pass
 
 
+def average_checkpoints(output_dir: str, submission_dir: str) -> bool:
+    """
+    Average weights from all saved checkpoints in output_dir and write the
+    result to submission_dir, replacing whatever the best-checkpoint callback
+    already put there.
+
+    Returns True  if averaging was performed (≥ 2 checkpoints found).
+    Returns False if skipped (< 2 checkpoints).
+    Must be called only from the main process.
+    """
+    import glob as _glob
+
+    checkpoint_dirs = sorted(
+        _glob.glob(os.path.join(output_dir, "checkpoint-*")),
+        key=lambda p: int(p.rsplit("-", 1)[-1]),
+    )
+
+    if len(checkpoint_dirs) < 2:
+        print(
+            f"[Checkpoint Averaging] Only {len(checkpoint_dirs)} checkpoint(s) found — "
+            f"skipping averaging.",
+            flush=True,
+        )
+        return False
+
+    print(
+        f"[Checkpoint Averaging] Averaging {len(checkpoint_dirs)} checkpoints: "
+        + ", ".join(os.path.basename(d) for d in checkpoint_dirs),
+        flush=True,
+    )
+
+    try:
+        from safetensors.torch import (
+            load_file as _load_st,
+            save_file as _save_st,
+        )
+        HAS_ST = True
+    except ImportError:
+        HAS_ST = False
+
+    is_lora = os.path.exists(
+        os.path.join(checkpoint_dirs[0], "adapter_config.json")
+    )
+    n = len(checkpoint_dirs)
+    avg_weights: dict = {}
+
+    if is_lora:
+        for ckpt_dir in checkpoint_dirs:
+            st_path = os.path.join(ckpt_dir, "adapter_model.safetensors")
+            bin_path = os.path.join(ckpt_dir, "adapter_model.bin")
+            if HAS_ST and os.path.exists(st_path):
+                weights = _load_st(st_path, device="cpu")
+            elif os.path.exists(bin_path):
+                weights = torch.load(bin_path, map_location="cpu")
+            else:
+                print(
+                    f"[Checkpoint Averaging] No adapter weights in {ckpt_dir} — skipping.",
+                    flush=True,
+                )
+                continue
+            for key, val in weights.items():
+                if key not in avg_weights:
+                    avg_weights[key] = val.float() / n
+                else:
+                    avg_weights[key] += val.float() / n
+    else:
+        # Full model — handle single-file and sharded checkpoints
+        for ckpt_dir in checkpoint_dirs:
+            shard_files: list = []
+            if HAS_ST:
+                shard_files = sorted(_glob.glob(os.path.join(ckpt_dir, "*.safetensors")))
+            if not shard_files:
+                shard_files = sorted(_glob.glob(os.path.join(ckpt_dir, "*.bin")))
+
+            for sf in shard_files:
+                if HAS_ST and sf.endswith(".safetensors"):
+                    shard = _load_st(sf, device="cpu")
+                else:
+                    shard = torch.load(sf, map_location="cpu")
+                for key, val in shard.items():
+                    if key not in avg_weights:
+                        avg_weights[key] = val.float() / n
+                    else:
+                        avg_weights[key] += val.float() / n
+                del shard
+
+    if not avg_weights:
+        print("[Checkpoint Averaging] No weights collected — skipping.", flush=True)
+        return False
+
+    # Cast back to bfloat16
+    avg_weights = {k: v.to(torch.bfloat16) for k, v in avg_weights.items()}
+
+    # Use last checkpoint as the template (configs, tokenizer files, etc.)
+    last_ckpt = checkpoint_dirs[-1]
+    if os.path.exists(submission_dir):
+        shutil.rmtree(submission_dir)
+    shutil.copytree(last_ckpt, submission_dir)
+
+    if is_lora:
+        if HAS_ST:
+            _save_st(avg_weights, os.path.join(submission_dir, "adapter_model.safetensors"))
+            bin_path = os.path.join(submission_dir, "adapter_model.bin")
+            if os.path.exists(bin_path):
+                os.remove(bin_path)
+        else:
+            torch.save(avg_weights, os.path.join(submission_dir, "adapter_model.bin"))
+    else:
+        # Remove old weight files and shard indices from the copied directory
+        for old_f in (
+            _glob.glob(os.path.join(submission_dir, "*.safetensors"))
+            + _glob.glob(os.path.join(submission_dir, "*.bin"))
+        ):
+            os.remove(old_f)
+        for idx_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+            idx_path = os.path.join(submission_dir, idx_name)
+            if os.path.exists(idx_path):
+                os.remove(idx_path)
+        # Save as a single file
+        if HAS_ST:
+            _save_st(avg_weights, os.path.join(submission_dir, "model.safetensors"))
+        else:
+            torch.save(avg_weights, os.path.join(submission_dir, "pytorch_model.bin"))
+
+    # Record what was done
+    with open(os.path.join(submission_dir, "loss.txt"), "w") as f:
+        f.write(f"averaged,{n}_checkpoints")
+
+    print(f"[Checkpoint Averaging] Saved averaged model to {submission_dir}", flush=True)
+    return True
+
+
 def init_wandb(train_request: Dict):
     # set wandb_mode=offline; do not upload the data to wandb export WANDB_MODE=offline
     return True
