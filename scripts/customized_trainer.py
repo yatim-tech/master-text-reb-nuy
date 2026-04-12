@@ -122,8 +122,12 @@ class CustomEvalSaveCallback(TrainerCallback):
                 control.should_save = False
                 args.save_strategy = "no"
                 # save the current loss of this step to the state;
-                last_log = state.log_history[-1]
-                my_state["train"]["current_loss"] = last_log["loss"]
+                # Prefer eval_loss for fair comparison; fallback to training loss
+                eval_entries = [e for e in state.log_history if "eval_loss" in e]
+                if eval_entries:
+                    my_state["train"]["current_loss"] = eval_entries[-1]["eval_loss"]
+                else:
+                    my_state["train"]["current_loss"] = state.log_history[-1].get("loss", float("inf"))
                 my_state["mode"] = "continue"
                 if n > MAX_TRIES:
                     n = MAX_TRIES
@@ -139,9 +143,14 @@ class CustomEvalSaveCallback(TrainerCallback):
             return control
     
         elif state.global_step == self.checking_step and self.checking_mode == "second_time": # at second time, we don't estimate the training time again, just save the current_loss
-            log_content = f"Checking the model at step: {state.global_step} where check_mode=second_time"            
+            log_content = f"Checking the model at step: {state.global_step} where check_mode=second_time"
             my_state = get_state()
-            current_loss = state.log_history[-1]["loss"]
+            # Use eval_loss from log history if available, fallback to training loss
+            eval_entries = [e for e in state.log_history if "eval_loss" in e]
+            if eval_entries:
+                current_loss = eval_entries[-1]["eval_loss"]
+            else:
+                current_loss = state.log_history[-1].get("loss", float("inf"))
             my_state["train"]["current_loss"] = current_loss
                 
             control.should_training_stop = True
