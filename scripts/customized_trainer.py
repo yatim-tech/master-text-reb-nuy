@@ -121,7 +121,6 @@ class CustomEvalSaveCallback(TrainerCallback):
                 control.should_training_stop = True
                 control.should_save = False
                 args.save_strategy = "no"
-                # save the current loss of this step to the state;
                 # Prefer eval_loss for fair comparison; fallback to training loss
                 eval_entries = [e for e in state.log_history if "eval_loss" in e]
                 if eval_entries:
