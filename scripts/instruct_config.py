@@ -29,7 +29,7 @@ INSTRUCT_CONFIG = {
         "save_before_remaining_time": 3,
     },
     "1_2_b": {
-        "lr": 0.0001,
+        "lr": 5e-5,
         "distributed": "ddp",
         "gpu_count": 1,
         "use_lora": False,
@@ -183,7 +183,8 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --save_total_limit {save_total_limit} \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
-    --weight_decay 0.01 \
+    --weight_decay 0.1 \
+    --label_smoothing_factor 0.1 \
     --lr_scheduler_type cosine_with_restarts \
     --warmup_ratio 0.05 \
     --lr_scheduler_kwargs "{\\"num_cycles\\": {num_cycles}}" \
@@ -207,6 +208,9 @@ def get_run_cmd(config: dict, gpu_nums: int):
         template = (
             template + f""" --use_attn_implementation {use_attn_implementation}"""
         )
+
+    if config.get("neftune_noise_alpha", 0) > 0:
+        template += f" --neftune_noise_alpha {config['neftune_noise_alpha']}"
 
     return template
 
@@ -263,6 +267,17 @@ def get_training_json(train_info: dict) -> dict:
     model_architecture = get_model_architecture(model_path)
     param_nums = get_model_num_params(model_name, model_path)
     config = get_instruct_config(param_nums)
+
+    # Full-precision fused AdamW for full FT (<4B) — more accurate than
+    # paged 8-bit Adam and has no VRAM issue at this scale.
+    # Keep paged 8-bit for larger / LoRA models where VRAM is tight.
+    if param_nums < 4_000_000_000:
+        _optimizer = "adamw_torch_fused"
+        _neftune_alpha = 15
+    else:
+        _optimizer = "paged_adamw_8bit"
+        _neftune_alpha = 0
+
     run_config = {
         "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
         "batch_size": config["batch_size"],
@@ -270,7 +285,8 @@ def get_training_json(train_info: dict) -> dict:
         "num_cycles": _get_num_cycles(_get_epoch_num(param_nums, train_info["hours_to_complete"])),
         "save_total_limit": max(2, _get_epoch_num(param_nums, train_info["hours_to_complete"])),
         "use_liger": get_use_liger(model_architecture),
-        "optimizer": "paged_adamw_8bit",
+        "optimizer": _optimizer,
+        "neftune_noise_alpha": _neftune_alpha,
         "use_lora": config.get("use_lora", False),
         "disable_fa": disable_flash_attention(model_architecture, model_name),
         "packing": "True",
