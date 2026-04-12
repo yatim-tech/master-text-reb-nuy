@@ -28,7 +28,7 @@ import traceback
 from transformers import TrainerCallback
 import argparse
 import math
-from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
+from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, GRPOCustomEvalSaveCallback, WhenToEvalHandler, init_wandb
 from transformers.modeling_utils import is_deepspeed_zero3_enabled
 import os
 import glob
@@ -48,8 +48,6 @@ import bitsandbytes as bnb
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import yaml
 from tokenize_grpo import get_dataset
-from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
-
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", "0"))
 GRPO_DEFAULT_NUM_GENERATIONS = 2
 BETA_GRPO = 0.04
@@ -455,11 +453,17 @@ def main():
     max_steps = train_request.get("max_steps", -1)
     log_info(f"max_steps: {max_steps}")
 
+    checking_step = train_request.get("checking_step", 70)
+    if checking_step >= total_steps_per_epoch:
+        checking_step = max(1, total_steps_per_epoch - 2)
+
+    total_steps_all_epochs = total_steps_per_epoch * training_args.num_train_epochs
+
     has_extra_column = STANDARD_GRPO_EXTRA_COLUMN in train_ds.column_names
 
     sample_data = dev_ds.to_list()[:10] if len(dev_ds) > 10 else None
     wrapped_reward_funcs = get_reward_funcs(train_request["dataset_type"], sample_data, has_extra_column)
-    
+
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=wrapped_reward_funcs,
@@ -469,12 +473,16 @@ def main():
         processing_class=tokenizer,
         peft_config=peft_config,
         callbacks=[
-            CustomEvalSaveCallback(
+            GRPOCustomEvalSaveCallback(
                 WhenToEvalHandler(train_request["end_time"], train_request["save_before_remaining_time"], periodic_save_steps=periodic_save_steps, steps_per_epoch=total_steps_per_epoch, max_steps=max_steps),
                 train_request["submission_dir"],
                 training_args.output_dir,
                 train_request["model_name"],
-                max_steps
+                max_steps,
+                checking_step=checking_step,
+                total_steps_all_epochs=total_steps_all_epochs,
+                end_time=train_request["end_time"],
+                checking_mode=train_request.get("checking_mode", "none")
             )
         ],
     )
