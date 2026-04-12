@@ -1,11 +1,23 @@
+import os
 import torch
-# Initialize CUDA before importing transformers/deepspeed to prevent
-# Triton driver error: "0 active drivers" during module-level autotune
+# Ensure CUDA is initialized before transformers/deepspeed trigger Triton's
+# autotune chain at module-import time, which causes:
+#   RuntimeError: 0 active drivers ([]). There should only be one.
+# Strategy:
+#   1. Always attempt torch.cuda.init() (no is_available() guard, which can
+#      return False prematurely during container startup).
+#   2. If init fails (no GPU / driver not ready), set TRITON_INTERPRET=1 so
+#      that triton uses its CPU-emulation backend for import-time init.
+#      This has zero effect on actual training (PyTorch CUDA ops, flash
+#      attention, and deepspeed ZeRO do not go through Triton).
+_cuda_ok = False
 try:
-    if torch.cuda.is_available():
-        torch.cuda.init()
+    torch.cuda.init()
+    _cuda_ok = True
 except Exception:
     pass
+if not _cuda_ok:
+    os.environ.setdefault("TRITON_INTERPRET", "1")
 
 from typing import Dict, Optional
 import requests
