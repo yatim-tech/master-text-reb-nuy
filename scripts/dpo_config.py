@@ -140,12 +140,22 @@ def get_config(param_nums: int) -> dict:
     return result
 
 
+def _get_num_cycles(epoch_num: int) -> int:
+    """
+    Number of cosine restart cycles, aligned to epoch boundaries.
+    - 1 epoch  → 1 cycle (plain cosine, no restart)
+    - 2 epochs → 2 cycles (restart once at midpoint)
+    - 3+ epochs → 3 cycles max (diminishing returns beyond 3)
+    """
+    return min(epoch_num, 3)
+
+
 def get_run_cmd(config: dict, gpu_nums: int):
     required_keys = [
         "epoch_num",
         "batch_size",
         "learning_rate",
-        "min_lr_rate",
+        "num_cycles",
         "beta",
         "use_liger",
         "optimizer",
@@ -184,9 +194,9 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --learning_rate {learning_rate} \
     --beta {beta} \
     --weight_decay {weight_decay} \
-    --lr_scheduler_type cosine_with_min_lr \
+    --lr_scheduler_type cosine_with_restarts \
     --warmup_ratio 0.05 \
-    --lr_scheduler_kwargs "{\\"min_lr_rate\\": 0.033}" \
+    --lr_scheduler_kwargs "{\\"num_cycles\\": {num_cycles}}" \
     --tf32 True \
     --gradient_checkpointing {gradient_checkpointing} \
     --optim {optimizer} \
@@ -263,7 +273,7 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.033,
+        "num_cycles": _get_num_cycles(_get_epoch_num(param_nums, train_info["hours_to_complete"])),
         "beta": config.get("beta", 0.1),
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
