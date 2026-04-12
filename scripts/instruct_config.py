@@ -176,7 +176,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --weight_decay 0.01 \
     --lr_scheduler_type cosine_with_min_lr \
     --warmup_ratio 0.05 \
-    --lr_scheduler_kwargs "{\\"min_lr_rate\\": 0.1}" \
+    --lr_scheduler_kwargs "{\\"min_lr_rate\\": 0.033}" \
     --tf32 True \
     --gradient_checkpointing {gradient_checkpointing} \
     --optim {optimizer} \
@@ -257,7 +257,7 @@ def get_training_json(train_info: dict) -> dict:
         "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "min_lr_rate": 0.1,
+        "min_lr_rate": 0.033,
         "use_liger": get_use_liger(model_architecture),
         "optimizer": "paged_adamw_8bit",
         "use_lora": config.get("use_lora", False),
@@ -338,7 +338,7 @@ def get_training_json(train_info: dict) -> dict:
     train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["adjust_batch_size"] = False
     train_request["periodic_save_steps"] = _get_periodic_save_steps(param_nums)
-    train_request["checking_step"] = 70
+    train_request["checking_step"] = 100
 
     if param_nums < 1_000_000_000:
         train_request["min_steps"] = max(
