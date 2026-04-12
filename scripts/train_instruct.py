@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from transformers import Trainer
 from customized_trainer import resize_if_needed, set_generation_config, CustomEvalSaveCallback, WhenToEvalHandler, init_wandb
 
-from packing.packed_dataset import PackedDataset
 from transformers import (
     Trainer,
     TrainingArguments,
