@@ -349,14 +349,40 @@ def resize_if_needed(model_name, model, token_nums):
         pass
 
 
-def average_checkpoints(output_dir: str, submission_dir: str) -> bool:
-    """
-    Average weights from all saved checkpoints in output_dir and write the
-    result to submission_dir, replacing whatever the best-checkpoint callback
-    already put there.
+def _read_checkpoint_loss(ckpt_dir: str) -> float:
+    """Read eval_loss from trainer_state.json inside a checkpoint dir."""
+    state_path = os.path.join(ckpt_dir, "trainer_state.json")
+    if not os.path.exists(state_path):
+        return float("inf")
+    try:
+        with open(state_path, "r") as f:
+            state = json.loads(f.read())
+        # Find the last eval_loss entry in log_history
+        for entry in reversed(state.get("log_history", [])):
+            if "eval_loss" in entry:
+                return entry["eval_loss"]
+    except Exception:
+        pass
+    return float("inf")
 
-    Returns True  if averaging was performed (≥ 2 checkpoints found).
-    Returns False if skipped (< 2 checkpoints).
+
+def average_checkpoints(output_dir: str, submission_dir: str, loss_threshold: float = 0.05) -> bool:
+    """
+    Average weights from the best checkpoints in output_dir and write the
+    result to submission_dir — but ONLY if it improves over the best single
+    checkpoint that the callback already placed there.
+
+    Filtering:
+      1. Read eval_loss from each checkpoint's trainer_state.json
+      2. Keep only checkpoints within `loss_threshold` of the best one
+      3. If < 2 checkpoints survive filtering → skip averaging
+
+    Safety:
+      - Backs up submission_dir before overwriting
+      - Records what was done in loss.txt
+
+    Returns True  if averaging was performed.
+    Returns False if skipped.
     Must be called only from the main process.
     """
     import glob as _glob
@@ -374,9 +400,34 @@ def average_checkpoints(output_dir: str, submission_dir: str) -> bool:
         )
         return False
 
+    # Read eval_loss for each checkpoint and filter to the good ones
+    ckpt_losses = []
+    for d in checkpoint_dirs:
+        loss = _read_checkpoint_loss(d)
+        ckpt_losses.append((d, loss))
+        print(f"[Checkpoint Averaging] {os.path.basename(d)}: eval_loss={loss}", flush=True)
+
+    best_loss = min(loss for _, loss in ckpt_losses)
+    if best_loss == float("inf"):
+        print("[Checkpoint Averaging] No eval_loss found in any checkpoint — skipping.", flush=True)
+        return False
+
+    # Keep only checkpoints within threshold of the best
+    good_ckpts = [(d, loss) for d, loss in ckpt_losses if loss <= best_loss + loss_threshold]
+
+    if len(good_ckpts) < 2:
+        print(
+            f"[Checkpoint Averaging] Only {len(good_ckpts)} checkpoint(s) within "
+            f"threshold {loss_threshold} of best ({best_loss:.4f}) — skipping averaging.",
+            flush=True,
+        )
+        return False
+
+    selected_dirs = [d for d, _ in good_ckpts]
     print(
-        f"[Checkpoint Averaging] Averaging {len(checkpoint_dirs)} checkpoints: "
-        + ", ".join(os.path.basename(d) for d in checkpoint_dirs),
+        f"[Checkpoint Averaging] Averaging {len(selected_dirs)} checkpoints "
+        f"(threshold={loss_threshold}, best_loss={best_loss:.4f}): "
+        + ", ".join(os.path.basename(d) for d in selected_dirs),
         flush=True,
     )
 
@@ -390,13 +441,13 @@ def average_checkpoints(output_dir: str, submission_dir: str) -> bool:
         HAS_ST = False
 
     is_lora = os.path.exists(
-        os.path.join(checkpoint_dirs[0], "adapter_config.json")
+        os.path.join(selected_dirs[0], "adapter_config.json")
     )
-    n = len(checkpoint_dirs)
+    n = len(selected_dirs)
     avg_weights: dict = {}
 
     if is_lora:
-        for ckpt_dir in checkpoint_dirs:
+        for ckpt_dir in selected_dirs:
             st_path = os.path.join(ckpt_dir, "adapter_model.safetensors")
             bin_path = os.path.join(ckpt_dir, "adapter_model.bin")
             if HAS_ST and os.path.exists(st_path):
@@ -404,10 +455,6 @@ def average_checkpoints(output_dir: str, submission_dir: str) -> bool:
             elif os.path.exists(bin_path):
                 weights = torch.load(bin_path, map_location="cpu")
             else:
-                print(
-                    f"[Checkpoint Averaging] No adapter weights in {ckpt_dir} — skipping.",
-                    flush=True,
-                )
                 continue
             for key, val in weights.items():
                 if key not in avg_weights:
@@ -415,14 +462,12 @@ def average_checkpoints(output_dir: str, submission_dir: str) -> bool:
                 else:
                     avg_weights[key] += val.float() / n
     else:
-        # Full model — handle single-file and sharded checkpoints
-        for ckpt_dir in checkpoint_dirs:
+        for ckpt_dir in selected_dirs:
             shard_files: list = []
             if HAS_ST:
                 shard_files = sorted(_glob.glob(os.path.join(ckpt_dir, "*.safetensors")))
             if not shard_files:
                 shard_files = sorted(_glob.glob(os.path.join(ckpt_dir, "*.bin")))
-
             for sf in shard_files:
                 if HAS_ST and sf.endswith(".safetensors"):
                     shard = _load_st(sf, device="cpu")
@@ -439,14 +484,13 @@ def average_checkpoints(output_dir: str, submission_dir: str) -> bool:
         print("[Checkpoint Averaging] No weights collected — skipping.", flush=True)
         return False
 
-    # Cast back to bfloat16
     avg_weights = {k: v.to(torch.bfloat16) for k, v in avg_weights.items()}
 
-    # Use last checkpoint as the template (configs, tokenizer files, etc.)
-    last_ckpt = checkpoint_dirs[-1]
+    # Use the best checkpoint as template (configs, tokenizer, etc.)
+    best_ckpt_dir = min(good_ckpts, key=lambda x: x[1])[0]
     if os.path.exists(submission_dir):
         shutil.rmtree(submission_dir)
-    shutil.copytree(last_ckpt, submission_dir)
+    shutil.copytree(best_ckpt_dir, submission_dir)
 
     if is_lora:
         if HAS_ST:
@@ -457,7 +501,6 @@ def average_checkpoints(output_dir: str, submission_dir: str) -> bool:
         else:
             torch.save(avg_weights, os.path.join(submission_dir, "adapter_model.bin"))
     else:
-        # Remove old weight files and shard indices from the copied directory
         for old_f in (
             _glob.glob(os.path.join(submission_dir, "*.safetensors"))
             + _glob.glob(os.path.join(submission_dir, "*.bin"))
@@ -467,17 +510,19 @@ def average_checkpoints(output_dir: str, submission_dir: str) -> bool:
             idx_path = os.path.join(submission_dir, idx_name)
             if os.path.exists(idx_path):
                 os.remove(idx_path)
-        # Save as a single file
         if HAS_ST:
             _save_st(avg_weights, os.path.join(submission_dir, "model.safetensors"))
         else:
             torch.save(avg_weights, os.path.join(submission_dir, "pytorch_model.bin"))
 
-    # Record what was done
     with open(os.path.join(submission_dir, "loss.txt"), "w") as f:
-        f.write(f"averaged,{n}_checkpoints")
+        f.write(f"averaged,{n}_of_{len(checkpoint_dirs)}_checkpoints,best={best_loss:.4f}")
 
-    print(f"[Checkpoint Averaging] Saved averaged model to {submission_dir}", flush=True)
+    print(
+        f"[Checkpoint Averaging] Saved averaged model ({n}/{len(checkpoint_dirs)} checkpoints) "
+        f"to {submission_dir}",
+        flush=True,
+    )
     return True
 
 

@@ -250,9 +250,9 @@ def _get_periodic_save_steps(param_nums: int) -> int:
     Instruct baseline (most steps/hour among all task types).
     """
     if param_nums < 1_000_000_000:
-        return 200
+        return 30
     elif param_nums < 4_000_000_000:
-        return 150
+        return 25
     elif param_nums < 9_000_000_000:
         return 100
     elif param_nums < 15_000_000_000:
@@ -350,6 +350,15 @@ def get_training_json(train_info: dict) -> dict:
     if train_info["find_lk_lr"]:
         lr = get_instruct_lr(model_name)
         if lr is not None:
+            if param_nums < 4_000_000_000:
+                # For <4B full FT: lookup LRs were computed under the old
+                # pipeline (huge batch size, packed eval). They may be too
+                # aggressive for the current setup. Use lookup as a hint but
+                # cap it at 2× our config LR to prevent overshooting.
+                max_lr = run_config["learning_rate"] * 2
+                if lr > max_lr:
+                    print(f"Lookup lr={lr} too high for <4B, capping at {max_lr}", flush=True)
+                    lr = max_lr
             print(f"Using lr from lk: {lr}", flush=True)
             run_config["learning_rate"] = lr
         else:
