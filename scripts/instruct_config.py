@@ -24,7 +24,7 @@ INSTRUCT_CONFIG = {
         "lr": 0.0001,
         "distributed": "ddp",
         "gpu_count": 1,
-        "batch_size": 140,
+        "batch_size": 32,
         "use_lora": False,
         "save_before_remaining_time": 3,
     },
@@ -33,7 +33,7 @@ INSTRUCT_CONFIG = {
         "distributed": "ddp",
         "gpu_count": 1,
         "use_lora": False,
-        "batch_size": 100,
+        "batch_size": 32,
         "save_before_remaining_time": 3,
     },
     "2_4_b": {
@@ -335,11 +335,14 @@ def get_training_json(train_info: dict) -> dict:
     if "falcon" in model_name.lower():
         run_config["batch_size"] = int(run_config["batch_size"] / 2)
 
+    # Target effective batch size: 32 for small models (<4B) where more
+    # gradient updates improve generalization; 64 for larger models.
+    target_effective_bs = 32 if param_nums < 4_000_000_000 else 64
     data_per_step = run_config["batch_size"] * run_config["gpu_nums"]
-    if data_per_step >= 64:
+    if data_per_step >= target_effective_bs:
         run_config["gradient_accumulation_steps"] = 1
     else:
-        run_config["gradient_accumulation_steps"] = int(64 / data_per_step)
+        run_config["gradient_accumulation_steps"] = int(target_effective_bs / data_per_step)
 
     if model_architecture.strip().lower() in ["gptossforcausallm"]:
         run_config["use_lora"] = False
@@ -365,7 +368,7 @@ def get_training_json(train_info: dict) -> dict:
     train_request["save_before_remaining_time"] = config.get("save_before_remaining_time", 3)
     train_request["adjust_batch_size"] = False
     train_request["periodic_save_steps"] = _get_periodic_save_steps(param_nums)
-    train_request["checking_step"] = 100
+    train_request["checking_step"] = 80 if param_nums < 4_000_000_000 else 100
 
     if param_nums < 1_000_000_000:
         train_request["min_steps"] = max(

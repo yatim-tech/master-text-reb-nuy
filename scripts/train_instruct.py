@@ -277,17 +277,11 @@ def main():
         )
         t2 = datetime.datetime.now()
         log_info(f"time for packing train_ds: {(t2 - t1).total_seconds()}")
-        t1 = datetime.datetime.now()
-        dev_ds = PackedDataset(
-            dev_ds,
-            tokenizer,
-            max_input_length=max_length,
-            max_packed_size=training_args.max_packed_size,
-        )
-        t2 = datetime.datetime.now()
-        log_info(f"time for packing dev_ds: {(t2 - t1).total_seconds()}")
+        # NOTE: dev_ds is intentionally NOT packed so that eval_loss is
+        # computed per-sample, matching how the tournament evaluates models.
+        # Packing dev_ds shifts token-level weighting toward longer samples
+        # and can cause checkpoint selection to diverge from tournament ranking.
         log_info(f"train_ds: {train_ds.stat()}")
-        log_info(f"dev_ds: {dev_ds.stat()}")
 
     log_info(f"world_size: {training_args.world_size}")
     total_steps_per_epoch = len(train_ds) // (
