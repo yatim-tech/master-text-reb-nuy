@@ -183,8 +183,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --save_total_limit {save_total_limit} \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
-    --weight_decay 0.1 \
-    --label_smoothing_factor 0.1 \
+    --weight_decay 0.01 \
     --lr_scheduler_type cosine_with_restarts \
     --warmup_ratio 0.05 \
     --lr_scheduler_kwargs "{\\"num_cycles\\": {num_cycles}}" \
@@ -273,7 +272,7 @@ def get_training_json(train_info: dict) -> dict:
     # Keep paged 8-bit for larger / LoRA models where VRAM is tight.
     if param_nums < 4_000_000_000:
         _optimizer = "adamw_torch_fused"
-        _neftune_alpha = 15
+        _neftune_alpha = 5
     else:
         _optimizer = "paged_adamw_8bit"
         _neftune_alpha = 0
