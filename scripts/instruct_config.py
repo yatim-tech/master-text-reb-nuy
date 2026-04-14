@@ -29,11 +29,11 @@ INSTRUCT_CONFIG = {
         "save_before_remaining_time": 3,
     },
     "1_2_b": {
-        "lr": 5e-5,
+        "lr": 1e-4,
         "distributed": "ddp",
         "gpu_count": 1,
         "use_lora": False,
-        "batch_size": 32,
+        "batch_size": 24,
         "save_before_remaining_time": 3,
     },
     "2_4_b": {
@@ -227,9 +227,9 @@ def _get_epoch_num(param_nums: int, hours: float) -> int:
         if hours < 3:    return 3
         return 5
     elif param_nums < 4_000_000_000:
-        if hours < 2:    return 1
-        if hours < 4:    return 2
-        return 3
+        if hours < 1.5:  return 2
+        if hours < 3:    return 3
+        return 5
     elif param_nums < 9_000_000_000:
         if hours < 3:    return 1
         if hours < 6:    return 2
@@ -272,7 +272,7 @@ def get_training_json(train_info: dict) -> dict:
     # Keep paged 8-bit for larger / LoRA models where VRAM is tight.
     if param_nums < 4_000_000_000:
         _optimizer = "adamw_torch_fused"
-        _neftune_alpha = 5
+        _neftune_alpha = 0
     else:
         _optimizer = "paged_adamw_8bit"
         _neftune_alpha = 0
@@ -334,9 +334,16 @@ def get_training_json(train_info: dict) -> dict:
     if "falcon" in model_name.lower():
         run_config["batch_size"] = int(run_config["batch_size"] / 2)
 
-    # Target effective batch size: 32 for small models (<4B) where more
-    # gradient updates improve generalization; 64 for larger models.
-    target_effective_bs = 32 if param_nums < 4_000_000_000 else 64
+    # Target effective batch size: smaller = more gradient updates.
+    # <2B: 24 (maximizes updates for small full-FT models)
+    # 2-4B: 32 (balanced)
+    # 4B+: 64 (stable gradients for larger models)
+    if param_nums < 2_000_000_000:
+        target_effective_bs = 24
+    elif param_nums < 4_000_000_000:
+        target_effective_bs = 32
+    else:
+        target_effective_bs = 64
     data_per_step = run_config["batch_size"] * run_config["gpu_nums"]
     if data_per_step >= target_effective_bs:
         run_config["gradient_accumulation_steps"] = 1
@@ -351,10 +358,9 @@ def get_training_json(train_info: dict) -> dict:
         if lr is not None:
             if param_nums < 4_000_000_000:
                 # For <4B full FT: lookup LRs were computed under the old
-                # pipeline (huge batch size, packed eval). They may be too
-                # aggressive for the current setup. Use lookup as a hint but
-                # cap it at 2× our config LR to prevent overshooting.
-                max_lr = run_config["learning_rate"] * 2
+                # pipeline (huge batch size, packed eval). Allow up to 3×
+                # our config LR to give the LR search enough room.
+                max_lr = run_config["learning_rate"] * 3
                 if lr > max_lr:
                     print(f"Lookup lr={lr} too high for <4B, capping at {max_lr}", flush=True)
                     lr = max_lr
