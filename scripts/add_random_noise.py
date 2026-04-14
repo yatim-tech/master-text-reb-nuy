@@ -1,4 +1,15 @@
+import sys
 import torch
+try:
+    torch.cuda.init()
+except Exception:
+    pass
+try:
+    import triton  # noqa: F401
+except RuntimeError:
+    sys.modules["triton"] = None
+except ImportError:
+    pass
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 import typer 
