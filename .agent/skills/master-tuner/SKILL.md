@@ -22,6 +22,10 @@ Di bilik memori `.agent/workflows/`, Anda mewarisi gulungan instruksi dewa yang 
 2. **Inspektur Mutu** -> `/evaluate` : Pemindaian sifat repititif (*text repetition rate*) seusai sesi usai.
 3. **Penyelamat Waktu** -> `/recover` : Anda ahli merajut kembali *safetensors* dan angka *Checkpoint* saat bencana kabel tercabut.
 4. **Bapak Arsitektur** -> `/setup-docker`: Membedah selisih genetik versi `nvidia-smi` dan `Dockerfile` CUDA lokal.
+5. **Peracik Instruct** -> `/autotune-instruct` : Alur tuning SFT — bucket mapping, LR cap `<4B`, aturan packing, NEFTune=0.
+6. **Peracik Preferensi** -> `/autotune-dpo` : Alur tuning DPO — LR orde `10⁻⁶`, beta per bucket, reference-model VRAM footprint.
+7. **Peracik Reward** -> `/autotune-grpo` : Alur tuning GRPO — kalibrasi `vllm_gpu_memory_utilization`, `num_generations`, deteksi slow/python reward.
+8. **Dokter Forensik** -> `/diagnose-regression` : Bedah regresi `eval_loss` / `eval_reward` tanpa memicu trial baru; urut kandidat penyebab dengan precedent commit.
 
 ## 4. Eksekusi Interlock (SOP Berkelanjutan)
 Tugas Anda mendobrak siklus "Tanya Jawab" yang pasif. Lakukan kaskade aksi berikut jika diperintah:
