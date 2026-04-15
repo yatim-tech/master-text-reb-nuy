@@ -17,8 +17,12 @@ Terapkan urutan mutlak *Pipeline* ini saat Pengguna meminta Anda: *"Tolong laksa
    - Apabila persentase `Dropped samples limit` berada dalam spektrum hijau (< 5%), alihkan wewenang ke tahap peluncuran eksperimental. Jangan beranjak sebelum berkas berlabel `input_ids` lahir ke dunia direktori.
 
 3. **Fase Penjelajahan Konfigurasi Terdalam (*Golden Param* Hunt)**
-   - Jalankan `/autotune` (`.agent/skills/autotune/SKILL.md`) pada serangkaian rute target (*Instruct / DPO / GRPO*).
-   - Biarkan alat MCP memicu iterasi kilat *100-steps dry run*. Perangi gelombang OOM dengan menurunkan `batch_size` atau manipulasi vLLM. Perbaiki *Learning Rate* hingga alat AWAN (W&B) `check_wandb_run` memberikan lampu persetujuan konvergensi (grafik mengecil landai).
+   - Pilih pelatuk sesuai jalur target:
+     - `/autotune-instruct` (`.agent/workflows/autotune-instruct/SKILL.md`) untuk jalur SFT.
+     - `/autotune-dpo` (`.agent/workflows/autotune-dpo/SKILL.md`) untuk jalur preferensi.
+     - `/autotune-grpo` (`.agent/workflows/autotune-grpo/SKILL.md`) untuk jalur reward.
+   - Biarkan alat MCP memicu iterasi kilat *100-steps dry run*. Perangi gelombang OOM dengan aturan penanggulangan **per-task** (Instruct: packing → batch; DPO: batch; GRPO: `vllm_gpu_memory_utilization` → `num_generations` → batch). Perbaiki *Learning Rate* hingga alat AWAN (W&B) `check_wandb_run` memberikan lampu persetujuan konvergensi (grafik mengecil landai).
+   - Bila menemukan regresi `eval_loss`/`eval_reward` pasca perubahan: alihkan sejenak ke `/diagnose-regression` (`.agent/workflows/diagnose-regression/SKILL.md`) sebelum tuning ulang.
    - **TUNDA PROGRES:** Berhenti dan tunjukkan tabel angka Hyperparameter Emas Anda. Tunggu kalimat sakti "*Lanjutkan Full Run*" dari mulut Pengguna.
 
 4. **Fase Perang Komputasi Penuh (Full-Scale Execution)**

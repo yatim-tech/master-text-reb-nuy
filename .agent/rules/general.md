@@ -36,5 +36,42 @@ Bila dalam kode akhir skrip membaca variabel saklar **`find_lk_lr` bernilai `Tru
 - **Deadline Komputasi (Early Stopping)**: Evaluasi pelatihan berjalan bukan dari sistem dasar Huggingface murni, melainkan melewati `CustomEvalSaveCallback`. Skrip *training* dibangun dengan kemampuan untuk **mendeteksi *deadline* sisa waktu** komputasi sewa. Pelatihan bisa berhenti dengan apik jika waktunya akan habis.
 - **Tracking Log & Metrik**: Monitoring tren grafik *Loss/Reward* terintegrasi ke `wandb` (Weights & Biases). Saat AI Anda memanggil alat penganalisa log/Server MCP, arahkan pemonitoran ke ekstraksi nilai file `trainer_state.json` lokal.
 
+---
+
+## 5. Aturan Turunan dari Commit Terbaru (Crystallized Rules)
+Bagian ini merangkum aturan-aturan yang tersebar di kode & commit recent. Letakkan di sini agar semua *skill* (autotune-*, diagnose-regression, master-tuner) merujuk pada sumber yang sama dan tidak drift.
+
+### 5.1 Target Effective Batch Size (Instruct)
+Dihitung otomatis di `get_training_json` — **jangan paksakan** via tabel atas.
+- `<2B` → `24` (memaksimalkan jumlah gradient update untuk model kecil full-FT).
+- `2-4B` → `32` (seimbang).
+- `≥4B` → `64` (gradient stabil untuk model besar).
+`gradient_accumulation_steps = target_effective_bs / (batch_size × gpu_nums)` bila agregat per-step `< target`.
+
+### 5.2 Aturan Optimizer
+- **Instruct `<4B`**: `adamw_torch_fused` (full-precision fused, lebih akurat, VRAM masih aman di skala ini).
+- **Instruct `≥4B`**: `paged_adamw_8bit` (+ LoRA by default; VRAM ketat).
+- **DPO (semua ukuran)**: `paged_adamw_8bit`. Jangan fallback ke `adamw_torch_fused`.
+- **GRPO (semua ukuran)**: `paged_adamw_8bit`.
+
+### 5.3 LR Cap untuk Instruct `<4B` Full-FT
+Bila `find_lk_lr=True` dan lookup LR dari [scripts/lrs/instruct.json](scripts/lrs/instruct.json) `> 3 × config_lr`, **cap di `3 × config_lr`**. Alasan: tabel lookup dihitung di pipeline lama dengan batch besar + packed eval, tidak kompatibel dengan pipeline sekarang. Referensi: [scripts/instruct_config.py](scripts/instruct_config.py) fungsi `get_training_json`.
+
+### 5.4 LR Scheduler
+- Tipe: `cosine_with_restarts` (SGDR), **bukan** `cosine_with_min_lr` (sudah diganti di commit `22572bd`).
+- `num_cycles = min(epoch_num, 3)` — aligned ke epoch boundary.
+- `warmup_ratio = 0.05`.
+- `epoch_num` *time-budget aware* (lihat `_get_epoch_num` di masing-masing `*_config.py`); mempengaruhi bentuk kurva LR, bukan sekadar durasi.
+
+### 5.5 Don't-Regress List
+Aturan yang sudah "berdarah" untuk ditemukan. Jangan ulangi:
+- **Instruct `neftune_noise_alpha`**: harus tetap `0`. Reintroduksi regularization agresif pernah menaikkan `eval_loss` ke 2.514 (precedent: commit `641ccd1`).
+- **Instruct dev dataset `<4B`**: jangan di-*pack*. Precedent: commit `bbeef16`.
+- **Instruct `<2B`**: butuh intensitas tinggi (LR penuh, epoch penuh, min_steps tinggi). Jangan turunkan intensitas. Precedent: commit `ac12b67`.
+- **Triton init**: harus terjadi sebelum `transformers` di-*import* (CUDA init dulu). Precedent: commit `59721d0`, `0492b3f`, `e6125b4`. Metode saat ini: stub `sys.modules` sebelum import.
+- **GRPO `allow_find_lk_lr`**: di-*hardcode* `False` — jalur lookup nonaktif by default. Jangan asumsikan lookup jalan kecuali flag dihidupkan.
+
+---
+
 > **Tugas Akhir untuk AI:**
 > *Dalam menganalisis *bug/error traceback*, agen pemrograman AI wajib melacak alur eksekusi dari hulu ke hilir (Contoh: Parameter JSON > `*config.py` > `text_trainer.py` > eksekusi akhir loop di `train_*.py`) sebelum melontarkan asumsi perbaikan kodingan ke repositori pengguna.*
