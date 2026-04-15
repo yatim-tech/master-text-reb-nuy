@@ -9,11 +9,11 @@ Terapkan urutan mutlak *Pipeline* ini saat Pengguna meminta Anda: *"Tolong laksa
 // turbo-all
 
 1. **Fase Pra-Penyelarasan Infrastruktur (Opsional tapi Krusial)**
-   - Jika repositori baru saja di-*clone* atau Pengguna menderita "*CUDA Error*", wajib eksekusi terlebih dahulu pembedahan kerangka fisik via `/setup-docker` (`.agent/skills/setup-docker/SKILL.md`).
+   - Jika repositori baru saja di-*clone* atau Pengguna menderita "*CUDA Error*", wajib eksekusi terlebih dahulu pembedahan kerangka fisik via `/setup-docker` (`.agent/workflows/setup-docker/SKILL.md`).
    - Selesaikan sinkronisasi *PyTorch* lokal dan rakitan *Image Docker*-nya sebelum melangkah sejengkal pun.
 
 2. **Fase Formasi Pustaka Data (Tokenization)**
-   - Ambil raw data dari tangan Pengguna, eksekusi pemanggilan komando `/tokenize` (`.agent/skills/tokenize/SKILL.md`).
+   - Ambil raw data dari tangan Pengguna, eksekusi pemanggilan komando `/tokenize` (`.agent/workflows/tokenize/SKILL.md`).
    - Apabila persentase `Dropped samples limit` berada dalam spektrum hijau (< 5%), alihkan wewenang ke tahap peluncuran eksperimental. Jangan beranjak sebelum berkas berlabel `input_ids` lahir ke dunia direktori.
 
 3. **Fase Penjelajahan Konfigurasi Terdalam (*Golden Param* Hunt)**
@@ -27,10 +27,10 @@ Terapkan urutan mutlak *Pipeline* ini saat Pengguna meminta Anda: *"Tolong laksa
 
 4. **Fase Perang Komputasi Penuh (Full-Scale Execution)**
    - Tembakkan komando eksekusi aslinya dan tunggu mesin pengkaji menyentuh kematangan `100% Epoch`.
-   - **Penawar Fatal:** Apabila di tengah asimilasi komputasi mendadak peladen membatu (Sistem OOM fatal / mati mendadak), **DILARANG PANIK!** Lakukan pernapasan buatan dengan memanggil komando `/recover` (`.agent/skills/recover/SKILL.md`). Injeksi argumetasi sakti `resume_from_checkpoint` agar tidak satu detik pun waktu sewa mesin dibuang percuma. Lanjutkan siklus pelatihannya sampai finis.
+   - **Penawar Fatal:** Apabila di tengah asimilasi komputasi mendadak peladen membatu (Sistem OOM fatal / mati mendadak), **DILARANG PANIK!** Lakukan pernapasan buatan dengan memanggil komando `/recover` (`.agent/workflows/recover/SKILL.md`). Injeksi argumetasi sakti `resume_from_checkpoint` agar tidak satu detik pun waktu sewa mesin dibuang percuma. Lanjutkan siklus pelatihannya sampai finis.
 
 5. **Fase Ujian Integritas Logika (Alignment Benchmark)**
-   - Ketika model dilabeli *Done*, panggil inspektur `/evaluate` (`.agent/skills/evaluate/SKILL.md`). 
+   - Ketika model dilabeli *Done*, panggil inspektur `/evaluate` (`.agent/workflows/evaluate/SKILL.md`). 
    - Gabungkan sementara struktur persendian LoRA-nya, dan paksa ia mengerjakan teks di luar wawasan datasetnya untuk membuktikan model itu bukan "beo" (menghafal mati /*overfitting*).
 
 6. **Fase Deploy Puncak (*The Handover*)**
