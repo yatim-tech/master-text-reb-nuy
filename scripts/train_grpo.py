@@ -413,11 +413,7 @@ def main():
     else:
         model_class = transformers.AutoModelForCausalLM
 
-    if training_args.use_lora:
-        model = model_class.from_pretrained(train_request["model_path"], trust_remote_code=True, **model_kwargs)
-        model.config.use_cache = False
-    else:
-        model = model_class.from_pretrained(train_request["model_path"], trust_remote_code=True, **model_kwargs)
+    model = model_class.from_pretrained(train_request["model_path"], trust_remote_code=True, **model_kwargs)
 
     # some model need to set the generation config or encounter the invalid generation config error
     set_generation_config(train_request["model_name"], model)

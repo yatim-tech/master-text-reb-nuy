@@ -206,6 +206,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
     required_keys = [
         "epoch_num",
         "batch_size",
+        "eval_batch_size",
         "learning_rate",
         "num_cycles",
         "weight_decay",
@@ -214,6 +215,8 @@ def get_run_cmd(config: dict, gpu_nums: int):
         "vllm_gpu_memory_utilization",
         "num_generations",
         "disable_fa",
+        "gradient_checkpointing",
+        "save_total_limit",
     ]
     for key in required_keys:
         if key not in config:
@@ -232,7 +235,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --request_path {request_path} \
     --bf16 True \
     --report_to wandb \
-    --output_dir /workspace/data/trained_model \
+    --output_dir {output_dir} \
     --num_train_epochs {epoch_num} \
     --per_device_train_batch_size {batch_size} \
     --per_device_eval_batch_size {eval_batch_size} \
@@ -244,7 +247,7 @@ def get_run_cmd(config: dict, gpu_nums: int):
     --metric_for_best_model eval_reward \
     --greater_is_better True \
     --save_only_model True \
-    --save_total_limit 2 \
+    --save_total_limit {save_total_limit} \
     --logging_steps 5 \
     --learning_rate {learning_rate} \
     --weight_decay {weight_decay} \
@@ -349,6 +352,7 @@ def get_training_json(train_info: dict) -> dict:
         "use_vllm": get_use_vllm(model_architecture, model_name),
         "tensor_parallel": config.get("tensor_parallel", False),
         "use_4bit": config.get("use_4bit", False),
+        "save_total_limit": max(2, _get_epoch_num(param_nums, train_info["hours_to_complete"])),
     }
 
     if model_name == "OpenAssistant/oasst-sft-4-pythia-12b-epoch-3.5":

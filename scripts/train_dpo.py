@@ -231,11 +231,7 @@ def main():
     else:
         model_class = transformers.AutoModelForCausalLM
 
-    if training_args.use_lora:
-        model = model_class.from_pretrained(train_request["model_path"], trust_remote_code=True, **model_kwargs)
-        model.config.use_cache = False
-    else:
-        model = model_class.from_pretrained(train_request["model_path"], trust_remote_code=True, **model_kwargs)
+    model = model_class.from_pretrained(train_request["model_path"], trust_remote_code=True, **model_kwargs)
 
     if len(training_args.fsdp) > 0 or is_deepspeed_zero3_enabled():
         # set gradient checkpointing to True with use_reentrant=True for deepspeed
