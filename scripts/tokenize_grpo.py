@@ -23,6 +23,11 @@ def stringify_wrong_item(items):
 
 def split_dataset(total_data_path: str, train_data_path: str, dev_data_path: str, seed: int = 42, dev_size: int = 200):
     """Split the dataset into train and dev"""
+    # Fix #2: Resource limit — pre-load file size check
+    _MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
+    file_size = os.path.getsize(total_data_path)
+    if file_size > _MAX_FILE_BYTES:
+        raise ValueError(f"Dataset file is {file_size / 1e9:.1f} GB — exceeds 5 GB safety limit")
     # Load the dataset
     with open(total_data_path, 'r') as file:
         data = json.load(file)
@@ -55,6 +60,15 @@ def _adapt_grpo_columns_to_trl(dataset: Dataset, dataset_type: dict) -> Dataset:
         dataset_type: GrpoDatasetType with field mappings
     """
     print("Adapting GRPO columns to standard format")
+
+    # Fix #1: Schema validation — fail fast before KeyError or silent column miss
+    if not dataset_type.get("field_prompt"):
+        raise ValueError("dataset_type missing required field 'field_prompt'")
+    if dataset_type["field_prompt"] not in dataset.column_names:
+        raise ValueError(
+            f"Column '{dataset_type['field_prompt']}' (dataset_type.field_prompt) not found in dataset — "
+            f"available: {list(dataset.column_names)}"
+        )
 
     column_mapping = {
         dataset_type["field_prompt"]: "prompt",

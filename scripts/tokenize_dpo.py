@@ -54,6 +54,11 @@ def remove_empty_items(items: list):
 
 def split_dataset(total_data_path: str, train_data_path: str, dev_data_path: str, seed: int = 42, dev_size: int = 200, max_data_size: int = -1, model: str = ""):
     """Split the dataset into train and dev"""
+    # Fix #2: Resource limit — pre-load file size check
+    _MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
+    file_size = os.path.getsize(total_data_path)
+    if file_size > _MAX_FILE_BYTES:
+        raise ValueError(f"Dataset file is {file_size / 1e9:.1f} GB — exceeds 5 GB safety limit")
     # Load the dataset
     with open(total_data_path, 'r') as file:
         data = json.load(file)
@@ -61,7 +66,15 @@ def split_dataset(total_data_path: str, train_data_path: str, dev_data_path: str
     random.seed(seed)
     random.shuffle(data)
     stringify_wrong_item(data)
+    before_drop = len(data)
     data = remove_empty_items(data)
+    # Fix #3: Enforce 5% dropped threshold
+    drop_ratio = (before_drop - len(data)) / before_drop if before_drop > 0 else 0
+    if drop_ratio > 0.05:
+        raise ValueError(
+            f"Dropped {drop_ratio:.1%} of samples ({before_drop - len(data)}/{before_drop}) "
+            f"exceeds 5% threshold — verify dataset quality before training."
+        )
     if model in REMOVE_ADD_TOKEN:
         print(f"Removing {REMOVE_ADD_TOKEN[model]} token from {model}")
         data = remove_sep_token(data, REMOVE_ADD_TOKEN[model])
@@ -91,6 +104,19 @@ def _adapt_dpo_columns_to_trl(dataset: Dataset, dataset_type: dict) -> Dataset:
         dataset_type: DpoDatasetType with field mappings
     """
     print("Adapting DPO columns to standard format")
+
+    # Fix #1: Schema validation — fail fast before KeyError or silent column miss
+    required_keys = ["field_prompt", "field_chosen", "field_rejected"]
+    missing = [k for k in required_keys if not dataset_type.get(k)]
+    if missing:
+        raise ValueError(f"dataset_type missing required field(s): {missing}")
+    for key in required_keys:
+        col = dataset_type[key]
+        if col not in dataset.column_names:
+            raise ValueError(
+                f"Column '{col}' (dataset_type.{key}) not found in dataset — "
+                f"available: {list(dataset.column_names)}"
+            )
 
     chosen_field = dataset_type["field_chosen"]
     rejected_field = dataset_type["field_rejected"]

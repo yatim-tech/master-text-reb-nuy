@@ -175,6 +175,11 @@ def split_dataset(
     max_data_size: int = -1
 ):
     """Split the dataset into train and dev"""
+    # Fix #2: Resource limit — pre-load file size check
+    _MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
+    file_size = os.path.getsize(total_data_path)
+    if file_size > _MAX_FILE_BYTES:
+        raise ValueError(f"Dataset file is {file_size / 1e9:.1f} GB — exceeds 5 GB safety limit")
     # Load the dataset
     with open(total_data_path, "r") as file:
         data = json.load(file)
@@ -193,6 +198,13 @@ def split_dataset(
         train_items = remove_empty_output_items(train_items)
         after_len = len(train_items)
         print(f"Removed {before_len - after_len} empty output items from train_ds")
+        # Fix #3: Enforce 5% dropped threshold
+        drop_ratio = (before_len - after_len) / before_len if before_len > 0 else 0
+        if drop_ratio > 0.05:
+            raise ValueError(
+                f"Dropped {drop_ratio:.1%} of train samples ({before_len - after_len}/{before_len}) "
+                f"exceeds 5% threshold — verify dataset quality before training."
+            )
         json.dump(train_items, file, ensure_ascii=False)
 
     with open(dev_data_path, "w") as file:
