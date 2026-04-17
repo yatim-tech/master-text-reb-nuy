@@ -3,7 +3,7 @@ from model_utility import (
     get_model_num_params,
     get_use_liger,
     disable_flash_attention,
-    get_data_size,
+    get_gradient_checkpointing,
     get_gpu_count,
 )
 from copy import deepcopy
@@ -277,12 +277,14 @@ def get_training_json(train_info: dict) -> dict:
         _optimizer = "paged_adamw_8bit"
         _neftune_alpha = 0
 
+    epoch_num = _get_epoch_num(param_nums, train_info["hours_to_complete"])
+
     run_config = {
-        "epoch_num": _get_epoch_num(param_nums, train_info["hours_to_complete"]),
+        "epoch_num": epoch_num,
         "batch_size": config["batch_size"],
         "learning_rate": config["lr"],
-        "num_cycles": _get_num_cycles(_get_epoch_num(param_nums, train_info["hours_to_complete"])),
-        "save_total_limit": max(2, _get_epoch_num(param_nums, train_info["hours_to_complete"])),
+        "num_cycles": _get_num_cycles(epoch_num),
+        "save_total_limit": max(2, epoch_num),
         "use_liger": get_use_liger(model_architecture),
         "optimizer": _optimizer,
         "neftune_noise_alpha": _neftune_alpha,
@@ -293,7 +295,7 @@ def get_training_json(train_info: dict) -> dict:
         "output_dir": train_info["output_dir"],
         "request_path": train_info["request_path"],
         "distributed": config.get("distributed", "ddp"),
-        "gradient_checkpointing": "True",
+        "gradient_checkpointing": get_gradient_checkpointing(model_name),
         "gradient_accumulation_steps": 4,
         "use_attn_implementation": (
             "kernels-community/vllm-flash-attn3"
